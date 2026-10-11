@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: chameleon
+      - uses: actions/checkout@v4
+        with:
+          repository: lum1n/acc
+          path: acc
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: chameleon
+      - run: cargo fmt --all --check
+        working-directory: chameleon
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+        working-directory: chameleon
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: chameleon
+      - uses: actions/checkout@v4
+        with:
+          repository: lum1n/acc
+          path: acc
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: chameleon
+      - run: cargo test --workspace
+        working-directory: chameleon

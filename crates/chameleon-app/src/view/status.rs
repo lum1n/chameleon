@@ -1,0 +1,164 @@
+//! The one-line status bar.
+
+use acc_core::event::ItemKind;
+use acc_core::transcript::ItemStatus;
+
+use crate::model::{App, FeedStatus};
+use crate::overlay::option_label;
+use crate::slot::Urgency;
+use crate::style::{Line, Span, Style};
+use crate::wrap::{truncate, width};
+
+pub fn build(app: &App, w: usize) -> Line {
+    let t = app.theme;
+    let muted = Style::new().fg(t.muted);
+    let mut line = Line::default();
+    let Some(slot) = app.selected() else {
+        line.push(Span::new(" chameleon ", Style::new().fg(t.accent).bold()));
+        line.push(Span::new("? help  n new  q quit", muted));
+        return line;
+    };
+    let (glyph, word) = slot.badge();
+    let color = match slot.urgency() {
+        Urgency::Blocked => t.permission,
+        Urgency::Error => t.error,
+        Urgency::Working => t.thinking,
+        Urgency::Done => t.done,
+        _ => t.muted,
+    };
+    line.push(Span::new(
+        format!(" {glyph} {word} "),
+        Style::new().fg(color).bold(),
+    ));
+    line.push(Span::new(format!("{} ", slot.harness().display_name()), muted));
+    if let Some(session) = &slot.session {
+        let mut opts = Vec::new();
+        for o in session.options() {
+            if let Some(c) = &o.current {
+                opts.push(format!("{} {}", option_label(o.id), c));
+            }
+        }
+        if opts.is_empty() {
+            if let Some(m) = &slot.spec.model {
+                opts.push(format!("model {m}"));
+            }
+            if let Some(p) = &slot.spec.permission {
+                opts.push(format!("permission {p}"));
+            }
+        }
+        if !opts.is_empty() {
+            line.push(Span::new("│ ", muted));
+            line.push(Span::new(format!("{} ", opts.join("  ")), Style::new()));
+        }
+        let u = session.usage();
+        let mut usage = Vec::new();
+        if let (Some(used), Some(window)) = (u.context_used, u.context_window)
+            && window > 0
+        {
+            let pct = used * 100 / window;
+            usage.push(format!("ctx {pct}%"));
+        } else if let Some(used) = u.context_used {
+            usage.push(format!("ctx {}", short(used)));
+        }
+        if let Some(c) = u.cost_usd {
+            usage.push(format!("${c:.2}"));
+        }
+        if let (Some(i), Some(o)) = (u.input_tokens, u.output_tokens)
+            && usage.is_empty()
+        {
+            usage.push(format!("{}↑ {}↓", short(i), short(o)));
+        }
+        if !usage.is_empty() {
+            line.push(Span::new("│ ", muted));
+            line.push(Span::new(format!("{} ", usage.join(" ")), Style::new()));
+        }
+        if let Some(q) = session.quota() {
+            let mut parts = Vec::new();
+            for win in &q.windows {
+                if let Some(p) = win.used_percent {
+                    parts.push(format!("{} {:.0}%", short_window(&win.id, win.window_minutes), p));
+                }
+            }
+            if !parts.is_empty() {
+                line.push(Span::new("│ ", muted));
+                let hot = q
+                    .windows
+                    .iter()
+                    .any(|w| w.used_percent.is_some_and(|p| p >= 80.0));
+                line.push(Span::new(
+                    format!("{} ", parts.join(" ")),
+                    if hot {
+                        Style::new().fg(t.permission)
+                    } else {
+                        Style::new()
+                    },
+                ));
+            }
+        }
+        let running = session.transcript().items().iter().rev().find(|i| {
+            i.status == ItemStatus::Running
+                && i.kind != ItemKind::AgentMessage
+                && i.kind != ItemKind::Reasoning
+        });
+        if let Some(i) = running {
+            let d = i.detail(session.spec().harness);
+            let what = match d {
+                acc_core::item::ItemDetail::Tool { name, title, .. } => format!("{name} {title}"),
+                acc_core::item::ItemDetail::Command { command, .. } => command,
+                acc_core::item::ItemDetail::FileChange { files } => {
+                    files.first().map(|f| f.path.clone()).unwrap_or_default()
+                }
+                acc_core::item::ItemDetail::Text => String::new(),
+            };
+            if !what.is_empty() {
+                line.push(Span::new("│ ", muted));
+                line.push(Span::new(
+                    truncate(&what.replace('\n', " "), 40),
+                    Style::new().fg(t.tool),
+                ));
+                line.push(Span::raw(" "));
+            }
+        }
+    }
+    if let Some(h) = app.host(&slot.key.host)
+        && let FeedStatus::Down(e) = &h.feed
+    {
+        line.push(Span::new("│ ", muted));
+        line.push(Span::new(
+            format!("feed down: {} ", truncate(e, 30)),
+            Style::new().fg(t.error),
+        ));
+    }
+    if let Some(e) = &slot.error {
+        line.push(Span::new("│ ", muted));
+        line.push(Span::new(truncate(e, 40), Style::new().fg(t.error)));
+    }
+    let right = "? help";
+    let used = width(&line.text());
+    if used + width(right) + 1 < w {
+        line.push(Span::new(" ".repeat(w - used - width(right) - 1), Style::new()));
+        line.push(Span::new(right, muted));
+    }
+    line
+}
+
+fn short(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1e6)
+    } else if n >= 10_000 {
+        format!("{}k", n / 1000)
+    } else if n >= 1000 {
+        format!("{:.1}k", n as f64 / 1e3)
+    } else {
+        n.to_string()
+    }
+}
+
+fn short_window(id: &str, minutes: Option<u64>) -> String {
+    match minutes {
+        Some(m) if m % 1440 == 0 && m >= 1440 => format!("{}d", m / 1440),
+        Some(m) if m % 60 == 0 => format!("{}h", m / 60),
+        Some(m) => format!("{m}m"),
+        None => id.replace('_', " "),
+    }
+}

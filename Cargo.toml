@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = ["crates/chameleon-app", "crates/chameleon"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+repository = "https://github.com/lum1n/chameleon"
+publish = false
+
+[workspace.dependencies]
+# Switch to `git = "https://github.com/lum1n/acc"` once acc is pinned.
+acc-core = { path = "../acc/crates/acc-core" }
+chameleon-app = { path = "crates/chameleon-app" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
+unicode-width = "0.2"
+log = { version = "0.4", features = ["std"] }
+tokio = { version = "1.53", default-features = false, features = ["rt-multi-thread", "process", "io-util", "sync", "time", "macros"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache"] }
+crossterm = "0.29"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+strip = true
