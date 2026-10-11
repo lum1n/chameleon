@@ -87,6 +87,11 @@ pub enum AppEvent {
         status: Option<i32>,
         stderr: String,
     },
+    /// Show a toast (hooks and scripts talking back).
+    Notice {
+        text: String,
+        error: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -406,9 +406,9 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
     let probed = app.hosts.get(w.host).is_some_and(|h| h.probed);
     let label = |i: usize, name: &str| -> Span {
         if w.field == i {
-            Span::new(fit(name, 12), accent.bold())
+            Span::new(fit(name, 13), accent.bold())
         } else {
-            Span::new(fit(name, 12), muted)
+            Span::new(fit(name, 13), muted)
         }
     };
     let mut hl = Line::new(vec![label(0, "host")]);
@@ -435,14 +435,14 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
     lines.push(hal);
     if !probed {
         lines.push(Line::new(vec![
-            Span::new(fit("", 12), muted),
+            Span::new(fit("", 13), muted),
             Span::new("probing the host for harnesses…", muted),
         ]));
     } else if harnesses.len() == Harness_ALL_LEN
         && app.hosts.get(w.host).is_some_and(|h| h.harnesses.is_empty())
     {
         lines.push(Line::new(vec![
-            Span::new(fit("", 12), muted),
+            Span::new(fit("", 13), muted),
             Span::new(
                 "no harness found on the host's PATH",
                 Style::new().fg(theme.error),
@@ -461,7 +461,7 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
     for (i, name) in names.iter().enumerate() {
         let field = i + 2;
         let value = &w.fields[i];
-        let shown_w = width.saturating_sub(13);
+        let shown_w = width.saturating_sub(14);
         let shown = tail(value, shown_w);
         let mut l = Line::new(vec![label(field, name)]);
         if value.is_empty() && w.field != field {
@@ -478,7 +478,7 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
         lines.push(l);
         if w.field == field && !value.is_empty() {
             lines.push(Line::new(vec![
-                Span::new(fit("", 12), muted),
+                Span::new(fit("", 13), muted),
                 Span::new(hints[i], muted.italic()),
             ]));
         }

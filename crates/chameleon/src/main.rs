@@ -2,6 +2,8 @@
 
 mod hooks;
 mod host;
+#[cfg(feature = "lua")]
+mod lua;
 mod runtime;
 mod ui;
 
@@ -18,27 +20,31 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 const USAGE: &str = "\
-usage: chameleon [--config PATH] [--log PATH]
+usage: chameleon [--config PATH] [--lua PATH] [--log PATH]
 
   --config PATH   TOML config (default: $XDG_CONFIG_HOME/chameleon/config.toml)
+  --lua PATH      Lua script (default: init.lua next to the config; needs --features lua)
   --log PATH      append debug logs here (also CHAMELEON_LOG=PATH)
   --version
 ";
 
 struct Args {
     config: Option<PathBuf>,
+    lua: Option<PathBuf>,
     log: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut args = Args {
         config: None,
+        lua: None,
         log: std::env::var_os("CHAMELEON_LOG").map(PathBuf::from),
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--config" | "-c" => args.config = Some(PathBuf::from(it.next().ok_or("--config needs a path")?)),
+            "--lua" => args.lua = Some(PathBuf::from(it.next().ok_or("--lua needs a path")?)),
             "--log" => args.log = Some(PathBuf::from(it.next().ok_or("--log needs a path")?)),
             "--version" | "-V" => {
                 println!(
@@ -158,7 +164,13 @@ async fn main() -> ExitCode {
         .client_tag
         .clone()
         .unwrap_or_else(|| format!("cham-{}-{}", hostname(), std::process::id()));
-    let runtime = runtime::Runtime::new(cfg, client_tag);
+    let runtime = match runtime::Runtime::new(cfg, client_tag, args.lua) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("chameleon: {e}");
+            return ExitCode::from(2);
+        }
+    };
 
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

@@ -25,6 +25,8 @@ pub type Term = Terminal<CrosstermBackend<Stdout>>;
 
 pub struct Runtime {
     app: App,
+    #[cfg(feature = "lua")]
+    lua: Option<crate::lua::Runtime>,
     hosts: HashMap<HostId, Arc<dyn Host>>,
     feeds: HashMap<HostId, Feed>,
     inputs: HashMap<SessionKey, UnboundedSender<Exec>>,
@@ -47,7 +49,11 @@ fn make_host(h: &HostConfig) -> Arc<dyn Host> {
 }
 
 impl Runtime {
-    pub fn new(cfg: Config, client_tag: String) -> Self {
+    pub fn new(
+        cfg: Config,
+        client_tag: String,
+        lua_path: Option<std::path::PathBuf>,
+    ) -> Result<Self, String> {
         let (tx, rx) = unbounded_channel();
         let tick = Duration::from_millis(cfg.general.tick_ms.clamp(50, 5000));
         let exec_timeout = Duration::from_secs(cfg.general.exec_timeout_s.max(1));
@@ -58,8 +64,27 @@ impl Runtime {
             feeds.insert(h.name.clone(), Feed::new(host.clone(), tx.clone()));
             hosts.insert(h.name.clone(), host);
         }
-        Self {
+        #[cfg(feature = "lua")]
+        let (cfg, lua) = match lua_path.or_else(crate::lua::default_path) {
+            Some(p) => {
+                let (lua, hooks) = crate::lua::Runtime::load(&p, hosts.clone(), tx.clone())?;
+                let mut cfg = cfg;
+                cfg.hooks.extend(hooks);
+                (cfg, Some(lua))
+            }
+            None => (cfg, None),
+        };
+        #[cfg(not(feature = "lua"))]
+        if let Some(p) = lua_path {
+            return Err(format!(
+                "{}: this build has no Lua (cargo build --features lua)",
+                p.display()
+            ));
+        }
+        Ok(Self {
             app: App::new(cfg, client_tag),
+            #[cfg(feature = "lua")]
+            lua,
             hosts,
             feeds,
             inputs: HashMap::new(),
@@ -67,7 +92,7 @@ impl Runtime {
             rx,
             tick,
             exec_timeout,
-        }
+        })
     }
 
     pub async fn run(mut self, terminal: &mut Term) -> std::io::Result<()> {
@@ -194,6 +219,20 @@ impl Runtime {
                     env,
                     suspend_tui,
                 } => {
+                    log::info!("hook {name}: {command}");
+                    #[cfg(feature = "lua")]
+                    if let Some(fn_name) = command.strip_prefix(crate::lua::PREFIX) {
+                        let result = match &self.lua {
+                            Some(l) => l.call(fn_name, &payload),
+                            None => Err("no lua runtime".into()),
+                        };
+                        let (status, stderr) = match result {
+                            Ok(()) => (Some(0), String::new()),
+                            Err(e) => (Some(1), e),
+                        };
+                        let _ = self.tx.send(AppEvent::HookDone { name, status, stderr });
+                        continue;
+                    }
                     let run = HookRun {
                         name: name.clone(),
                         command,

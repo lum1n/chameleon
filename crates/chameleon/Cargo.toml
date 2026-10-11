@@ -22,7 +22,7 @@ tokio.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 log.workspace = true
-mlua = { version = "0.11", features = ["lua54", "vendored"], optional = true }
+mlua = { version = "0.11", features = ["lua54", "vendored", "serialize"], optional = true }
 
 [lints]
 workspace = true

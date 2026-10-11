@@ -34,6 +34,8 @@ jobs:
         working-directory: chameleon
       - run: cargo clippy --workspace --all-targets -- -D warnings
         working-directory: chameleon
+      - run: cargo clippy -p chameleon --features lua --all-targets -- -D warnings
+        working-directory: chameleon
 
   test:
     strategy:
@@ -54,4 +56,6 @@ jobs:
         with:
           workspaces: chameleon
       - run: cargo test --workspace
+        working-directory: chameleon
+      - run: cargo test -p chameleon --features lua
         working-directory: chameleon

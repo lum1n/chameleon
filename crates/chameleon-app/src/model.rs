@@ -260,6 +260,10 @@ impl App {
                 }
                 Vec::new()
             }
+            AppEvent::Notice { text, error } => {
+                self.toast(text, error);
+                Vec::new()
+            }
             AppEvent::HookDone { name, status, stderr } => {
                 if status != Some(0) {
                     let detail = if stderr.is_empty() {
@@ -419,11 +423,12 @@ impl App {
         if self.overlay.is_some() {
             return self.overlay_key(key);
         }
-        if let Some(action) = self.keymap.global(&key) {
-            return self.action(action);
-        }
+        // Hook keys win over the defaults, like any other override.
         if let Some(hook) = self.hook_for_key(&key) {
             return self.run_hook(&hook, None);
+        }
+        if let Some(action) = self.keymap.global(&key) {
+            return self.action(action);
         }
         if self.focus == Pane::Composer {
             if key.code == KeyCode::Enter && !key.alt && !key.shift {

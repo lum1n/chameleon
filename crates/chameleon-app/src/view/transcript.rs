@@ -129,6 +129,18 @@ pub fn build(app: &mut App, rect: Rect) -> PaneView {
             lines.push(l);
         }
     }
+    log::debug!(
+        "transcript: items={} total={} h={} w={} start={} end={} lines={} follow={} from_bottom={}",
+        items.len(),
+        total,
+        h,
+        w,
+        start,
+        end,
+        lines.len(),
+        slot.scroll.follow,
+        slot.scroll.from_bottom
+    );
     if items.is_empty() && lines.is_empty() {
         let hint = if session.is_alive() {
             "say something below"

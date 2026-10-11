@@ -200,3 +200,86 @@ impl Feed {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use std::io::Write as _;
+
+    use acc_core::detached::FeedPath;
+    use tokio::sync::mpsc::UnboundedReceiver;
+
+    use super::*;
+
+    async fn next_line(rx: &mut UnboundedReceiver<AppEvent>) -> (String, String) {
+        loop {
+            let ev = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+                .await
+                .expect("a line in time")
+                .expect("channel open");
+            if let AppEvent::FeedLine { key, bytes, .. } = ev {
+                return (key, String::from_utf8(bytes).unwrap());
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn follows_files_and_resumes_after_a_restart() {
+        let dir = std::env::temp_dir().join(format!("cham-feed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.log");
+        let b = dir.join("b.log");
+        std::fs::write(&a, "one\n").unwrap();
+        std::fs::write(&b, "").unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let host: Arc<dyn Host> = Arc::new(crate::host::local::LocalHost::new("local"));
+        let feed = Feed::new(host, tx);
+        feed.follow(FeedEntry {
+            key: "a".into(),
+            path: FeedPath::File(a.display().to_string()),
+            offset: 0,
+        });
+        assert_eq!(next_line(&mut rx).await, ("a".into(), "one\n".into()));
+        {
+            let mut f = std::fs::OpenOptions::new().append(true).open(&a).unwrap();
+            f.write_all(b"two\n").unwrap();
+        }
+        assert_eq!(next_line(&mut rx).await, ("a".into(), "two\n".into()));
+        assert_eq!(lock(&feed.inner).entries["a"].offset, 8);
+
+        // Adding a file restarts the follower; `a` resumes after what was read.
+        feed.follow(FeedEntry {
+            key: "b".into(),
+            path: FeedPath::File(b.display().to_string()),
+            offset: 0,
+        });
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        {
+            let mut f = std::fs::OpenOptions::new().append(true).open(&b).unwrap();
+            f.write_all(b"bee\n").unwrap();
+            let mut f = std::fs::OpenOptions::new().append(true).open(&a).unwrap();
+            f.write_all(b"three\n").unwrap();
+        }
+        let mut got = vec![next_line(&mut rx).await, next_line(&mut rx).await];
+        got.sort();
+        assert_eq!(
+            got,
+            vec![("a".into(), "three\n".into()), ("b".into(), "bee\n".into())],
+            "nothing repeated, nothing lost"
+        );
+        feed.close().await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        // The follower's processes are gone with it.
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("pgrep -f '^tail -c .* -F {}' || true", a.display()))
+            .output()
+            .unwrap();
+        assert!(
+            out.stdout.is_empty(),
+            "tails still running: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
