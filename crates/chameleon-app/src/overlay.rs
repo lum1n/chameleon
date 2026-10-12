@@ -1,9 +1,9 @@
 //! Modal overlays: permission cards, the launch wizard, the palette,
-//! option pickers, confirmations, diffs and help.
+//! option pickers, harness panels, confirmations, diffs and help.
 
 use acc_core::Harness;
-use acc_core::command::{Command, OptionId};
-use acc_core::event::ItemKind;
+use acc_core::command::{Choice, Command, CommandEntry, CommandInput, Exec, OptionId};
+use acc_core::event::{ItemKind, Panel, PanelAction};
 use acc_core::item::ItemDetail;
 use acc_core::session::{LaunchRequest, Origin, Permission};
 use acc_core::state::BlockKind;
@@ -85,6 +85,30 @@ pub enum Overlay {
         item: String,
         scroll: usize,
     },
+    /// Picks the value for a palette entry that takes one (`/model`).
+    Pick {
+        key: SessionKey,
+        command: String,
+        choices: Vec<Choice>,
+        current: Option<String>,
+        selected: usize,
+    },
+    /// A harness dialog (`/mcp`, `/status`); its content lives in the slot
+    /// and is replaced whenever the harness answers again.
+    Panel {
+        key: SessionKey,
+        id: String,
+        /// Index into [`panel_actions`].
+        selected: usize,
+        /// Text typed for an action that asks for it.
+        input: Option<String>,
+    },
+    /// The theme picker; moving previews, esc puts `original` back.
+    Themes {
+        /// Index into [`App::theme_choices`], after the terminal entry (0).
+        selected: usize,
+        original: Option<String>,
+    },
 }
 
 impl Overlay {
@@ -127,6 +151,22 @@ impl Overlay {
             selected,
             text: String::new(),
         }
+    }
+
+    pub fn themes(app: &App) -> Self {
+        let original = app.theme_name().map(str::to_owned);
+        let choices = app.theme_choices();
+        let selected = original
+            .as_deref()
+            .and_then(|n| {
+                let builtin = crate::themes::builtin();
+                let id = crate::themes::find(n, &app.cfg.custom_themes, &builtin)?
+                    .id
+                    .clone();
+                choices.iter().position(|t| t.id == id)
+            })
+            .map_or(0, |i| i + 1);
+        Overlay::Themes { selected, original }
     }
 
     pub fn options(key: SessionKey) -> Self {
@@ -212,8 +252,19 @@ impl Overlay {
             }
             Overlay::Palette { query, .. } => query.push_str(text),
             Overlay::Permission { text: t, .. } => t.push_str(text),
+            Overlay::Panel { input: Some(t), .. } => t.push_str(text),
             _ => {}
         }
+    }
+}
+
+/// Permission modes the launch wizard offers as choices. Claude's mirror
+/// acc's own list (`claude::PERMISSION_MODES`); other harnesses take a
+/// free-form value (a Codex profile, say).
+pub fn permission_modes(h: Harness) -> &'static [&'static str] {
+    match h {
+        Harness::Claude => &["default", "acceptEdits", "plan", "auto", "dontAsk"],
+        _ => &[],
     }
 }
 
@@ -224,7 +275,16 @@ pub fn parse_harness(s: &str) -> Option<Harness> {
         .find(|h| h.id() == s || h.program() == s || h.display_name().to_ascii_lowercase() == s)
 }
 
-fn is_denial(id: &str, label: &str) -> bool {
+/// A panel's buttons in display order: each row's, then the section's.
+pub fn panel_actions(panel: &Panel) -> Vec<&PanelAction> {
+    panel
+        .sections
+        .iter()
+        .flat_map(|s| s.rows.iter().flat_map(|r| &r.actions).chain(&s.actions))
+        .collect()
+}
+
+pub(crate) fn is_denial(id: &str, label: &str) -> bool {
     let l = label.to_ascii_lowercase();
     let i = id.to_ascii_lowercase();
     ["deny", "no", "reject", "cancel", "decline", "block"]
@@ -243,6 +303,9 @@ impl App {
                 let mut hint = c.description.clone();
                 if let Some(a) = &c.arg_hint {
                     hint = format!("{hint} ⟨{a}⟩");
+                }
+                if c.exec == Exec::Terminal {
+                    hint = format!("{hint} · opens {}", s.harness().display_name());
                 }
                 items.push(PaletteItem {
                     label: format!("/{}", c.name.trim_start_matches('/')),
@@ -455,6 +518,19 @@ impl App {
                                 w.harness = *h;
                             }
                         }
+                        KeyCode::Left | KeyCode::Right
+                            if w.field == 4 && !permission_modes(w.harness).is_empty() =>
+                        {
+                            let modes = permission_modes(w.harness);
+                            let n = modes.len();
+                            let next = match modes.iter().position(|m| *m == w.fields[2]) {
+                                None if key.code == KeyCode::Right => 0,
+                                None => n - 1,
+                                Some(i) if key.code == KeyCode::Right => (i + 1) % n,
+                                Some(i) => (i + n - 1) % n,
+                            };
+                            w.fields[2] = modes[next].to_owned();
+                        }
                         KeyCode::Char(' ') if w.field == 1 => {
                             let list = self.wizard_harnesses(w.host);
                             let i = list.iter().position(|h| *h == w.harness).unwrap_or(0);
@@ -592,6 +668,121 @@ impl App {
                     _ => {}
                 }
             }
+            Overlay::Pick {
+                key: skey,
+                command,
+                choices,
+                selected,
+                ..
+            } => {
+                let n = choices.len().max(1);
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => keep = false,
+                    KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => *selected = (*selected + 1) % n,
+                    KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => {
+                        *selected = (*selected + n - 1) % n
+                    }
+                    KeyCode::Enter => {
+                        keep = false;
+                        if let Some(c) = choices.get(*selected) {
+                            let (skey, name, args) = (skey.clone(), command.clone(), c.value.clone());
+                            out = self.send(&skey, Command::Invoke { name, args });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Overlay::Panel {
+                key: skey,
+                id,
+                selected,
+                input,
+            } => {
+                let actions: Vec<PanelAction> = self
+                    .slot_mut(skey)
+                    .and_then(|s| s.panels.get(id.as_str()))
+                    .map(|p| panel_actions(p).into_iter().cloned().collect())
+                    .unwrap_or_default();
+                let n = actions.len().max(1);
+                if let Some(text) = input {
+                    match key.code {
+                        KeyCode::Esc => *input = None,
+                        KeyCode::Enter => {
+                            if let Some(a) = actions.get(*selected) {
+                                let args = format!("{} {}", a.args, text.trim()).trim().to_owned();
+                                let (skey, name) = (skey.clone(), a.command.clone());
+                                *input = None;
+                                out = self.send(&skey, Command::Invoke { name, args });
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            text.pop();
+                        }
+                        KeyCode::Char('u') if key.ctrl => text.clear(),
+                        KeyCode::Char(c) if !key.ctrl && !key.alt => text.push(c),
+                        _ => {}
+                    }
+                } else {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('q') => keep = false,
+                        KeyCode::Down
+                        | KeyCode::Char('j')
+                        | KeyCode::Tab
+                        | KeyCode::Right
+                        | KeyCode::Char('l') => *selected = (*selected + 1) % n,
+                        KeyCode::Up
+                        | KeyCode::Char('k')
+                        | KeyCode::BackTab
+                        | KeyCode::Left
+                        | KeyCode::Char('h') => *selected = (*selected + n - 1) % n,
+                        KeyCode::Enter => {
+                            if let Some(a) = actions.get(*selected) {
+                                if a.prompt.is_some() {
+                                    *input = Some(String::new());
+                                } else {
+                                    // The panel stays open; the harness answers with a fresh one.
+                                    let (skey, name, args) =
+                                        (skey.clone(), a.command.clone(), a.args.clone());
+                                    out = self.send(&skey, Command::Invoke { name, args });
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Overlay::Themes { selected, original } => {
+                let n = self.theme_choices().len() + 1;
+                let before = *selected;
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        keep = false;
+                        let original = original.clone();
+                        self.apply_theme(original.as_deref());
+                    }
+                    KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => *selected = (*selected + 1) % n,
+                    KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => {
+                        *selected = (*selected + n - 1) % n
+                    }
+                    KeyCode::PageDown => *selected = (*selected + 10).min(n - 1),
+                    KeyCode::PageUp => *selected = selected.saturating_sub(10),
+                    KeyCode::Home | KeyCode::Char('g') => *selected = 0,
+                    KeyCode::End | KeyCode::Char('G') => *selected = n - 1,
+                    KeyCode::Enter => {
+                        keep = false;
+                        let name = self.theme_name().map(str::to_owned);
+                        self.toast(format!("theme: {}", name.as_deref().unwrap_or("terminal")), false);
+                        out.push(Effect::SaveTheme { name });
+                    }
+                    _ => {}
+                }
+                if keep && *selected != before {
+                    let name = selected
+                        .checked_sub(1)
+                        .and_then(|i| self.theme_choices().get(i).map(|t| t.id.clone()));
+                    self.apply_theme(name.as_deref());
+                }
+            }
             Overlay::Diff { scroll, .. } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('d') => keep = false,
                 KeyCode::Down | KeyCode::Char('j') => *scroll += 1,
@@ -693,11 +884,154 @@ impl App {
     fn palette_run(&mut self, item: PaletteItem, args: String) -> Vec<Effect> {
         match item.kind {
             PaletteKind::Command(name) => match self.selected.clone() {
-                Some(key) => self.send(&key, Command::Invoke { name, args }),
+                Some(key) => self.run_command(&key, name, args),
                 None => Vec::new(),
             },
             PaletteKind::Action(a) => self.action(a),
             PaletteKind::Hook(name) => self.run_hook(&name, None),
+        }
+    }
+}
+
+impl App {
+    fn command_entry(&self, key: &SessionKey, name: &str) -> Option<CommandEntry> {
+        let slot = self.slots.iter().find(|s| &s.key == key)?;
+        slot.session
+            .as_ref()?
+            .commands()
+            .iter()
+            .find(|c| c.name == name)
+            .cloned()
+    }
+
+    /// Runs a palette entry: entries that take a value open a picker when
+    /// none was typed, terminal-only ones open the harness's own TUI.
+    pub(crate) fn run_command(&mut self, key: &SessionKey, name: String, args: String) -> Vec<Effect> {
+        let entry = self.command_entry(key, &name);
+        if entry.as_ref().is_some_and(|e| e.exec == Exec::Terminal) {
+            return self.open_terminal(key);
+        }
+        if args.trim().is_empty()
+            && let Some(picker) = self.picker(key, &name)
+        {
+            self.overlay = Some(picker);
+            return Vec::new();
+        }
+        self.send(key, Command::Invoke { name, args })
+    }
+
+    /// A picker for palette entry `name`, when it takes a known set of values.
+    pub(crate) fn picker(&self, key: &SessionKey, name: &str) -> Option<Overlay> {
+        let entry = self.command_entry(key, name)?;
+        let (choices, current) = match &entry.input {
+            CommandInput::None => return None,
+            CommandInput::Option { id } => {
+                let session = self.slots.iter().find(|s| &s.key == key)?.session.as_ref()?;
+                let def = session.options().iter().find(|o| o.id == *id)?;
+                (
+                    def.values.iter().map(Choice::new).collect::<Vec<_>>(),
+                    def.current.clone(),
+                )
+            }
+            CommandInput::Choice { choices, required } => {
+                let mut list = choices.clone();
+                if !required {
+                    list.insert(
+                        0,
+                        Choice {
+                            value: String::new(),
+                            label: "(none)".into(),
+                            description: Some("run it without a value".into()),
+                        },
+                    );
+                }
+                (list, None)
+            }
+        };
+        if choices.is_empty() {
+            return None;
+        }
+        let selected = current
+            .as_ref()
+            .and_then(|c| choices.iter().position(|v| &v.value == c))
+            .unwrap_or(0);
+        Some(Overlay::Pick {
+            key: key.clone(),
+            command: name.to_owned(),
+            choices,
+            current,
+            selected,
+        })
+    }
+
+    /// Hands the terminal to the harness's own TUI in the session's directory.
+    pub(crate) fn open_terminal(&mut self, key: &SessionKey) -> Vec<Effect> {
+        let Some(slot) = self.slots.iter().find(|s| &s.key == key) else {
+            return Vec::new();
+        };
+        let harness = slot.harness();
+        let program = match acc_core::multiplexer::tui::launch(harness, None) {
+            Ok(p) => p,
+            Err(e) => {
+                self.toast(e.to_string(), true);
+                return Vec::new();
+            }
+        };
+        let argv = program.argv();
+        let line = format!(
+            "cd {} && exec {}",
+            acc_core::shell::quote(&slot.spec.cwd),
+            acc_core::shell::join(argv.iter().map(String::as_str))
+        );
+        let argv = match self
+            .host(&key.host)
+            .and_then(|h| h.cfg.ssh.clone().map(|d| (d, h.cfg.ssh_args.clone())))
+        {
+            Some((dest, ssh_args)) => {
+                let mut v = vec!["ssh".to_owned(), "-t".to_owned()];
+                v.extend(ssh_args);
+                v.extend(["--".to_owned(), dest, line]);
+                v
+            }
+            None => vec!["sh".to_owned(), "-c".to_owned(), line],
+        };
+        vec![Effect::Terminal { argv }]
+    }
+
+    /// Shows a panel the harness answered with, unless another dialog is open.
+    pub(crate) fn show_panel(&mut self, key: &SessionKey, id: &str) {
+        if self.selected.as_ref() != Some(key) {
+            return;
+        }
+        let actions = self
+            .slots
+            .iter()
+            .find(|s| &s.key == key)
+            .and_then(|s| s.panels.get(id))
+            .map_or(0, |p| panel_actions(p).len());
+        match &mut self.overlay {
+            None => {
+                self.overlay = Some(Overlay::Panel {
+                    key: key.clone(),
+                    id: id.to_owned(),
+                    selected: 0,
+                    input: None,
+                })
+            }
+            Some(Overlay::Panel {
+                key: k,
+                id: open,
+                selected,
+                ..
+            }) if k == key => {
+                if open != id {
+                    *open = id.to_owned();
+                    *selected = 0;
+                }
+                // Keep the cursor inside a panel that lost actions.
+                *selected = (*selected).min(actions.saturating_sub(1));
+            }
+            Some(_) => {}
         }
     }
 }

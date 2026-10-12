@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use unicode_width::UnicodeWidthStr;
 
-use crate::style::{Line, Span};
+use crate::style::{Line, Span, Style};
 
 /// Display width of text, tabs counted as four columns.
 pub fn width(s: &str) -> usize {
@@ -56,55 +56,57 @@ pub fn fit(s: &str, cols: usize) -> String {
 /// word longer than the line). Spans keep their styles across the break.
 /// `indent` prefixes every continuation line.
 pub fn wrap_line(line: &Line, max: usize, indent: &str) -> Vec<Line> {
+    wrap_hang(line, max, &Line::raw(indent))
+}
+
+/// [`wrap_line`] with a styled prefix on continuation lines (a code
+/// block's gutter, a quote's bar).
+pub fn wrap_hang(line: &Line, max: usize, hang: &Line) -> Vec<Line> {
     let max = max.max(4);
     let mut out: Vec<Line> = Vec::new();
     let mut cur = Line::default();
     let mut cur_w = 0;
-    let indent_w = width(indent);
+    let indent_w = hang.width();
+    let hang = Line::new(
+        hang.spans
+            .iter()
+            .filter(|s| !s.text.is_empty())
+            .cloned()
+            .collect(),
+    );
 
     let push_cur = |out: &mut Vec<Line>, cur: &mut Line, cur_w: &mut usize| {
         trim_end(cur);
         out.push(std::mem::take(cur));
-        *cur = Line::new(vec![Span::raw(indent)]);
+        *cur = hang.clone();
         *cur_w = indent_w;
     };
 
-    for span in &line.spans {
-        // Split the span's text into words with their trailing spaces.
-        let mut word = String::new();
-        let flush = |word: &mut String, out: &mut Vec<Line>, cur: &mut Line, cur_w: &mut usize| {
-            if word.is_empty() {
-                return;
-            }
-            let ww = width(word);
-            if *cur_w + ww > max && *cur_w > indent_w {
+    // A word (with its trailing space) may cross spans — `code`, then a
+    // comma — so it is kept as styled characters until it is placed.
+    let mut word: Vec<(char, Style)> = Vec::new();
+    let flush = |word: &mut Vec<(char, Style)>, out: &mut Vec<Line>, cur: &mut Line, cur_w: &mut usize| {
+        if word.is_empty() {
+            return;
+        }
+        let cw = |c: char| width(c.encode_utf8(&mut [0u8; 4]));
+        let ww: usize = word.iter().map(|(c, _)| cw(*c)).sum();
+        if *cur_w + ww > max && *cur_w > indent_w {
+            push_cur(out, cur, cur_w);
+        }
+        // Longer than a line: hard-split by columns.
+        for (c, style) in word.drain(..) {
+            if *cur_w + cw(c) > max && *cur_w > indent_w {
+                if c == ' ' {
+                    continue; // never start a line with the break's space
+                }
                 push_cur(out, cur, cur_w);
             }
-            if *cur_w + ww <= max {
-                cur.push(Span::new(std::mem::take(word), span.style));
-                *cur_w += ww;
-                return;
-            }
-            // Longer than a line: hard-split by columns.
-            let mut piece = String::new();
-            let mut pw = 0;
-            for c in word.chars() {
-                let cw = width(c.encode_utf8(&mut [0u8; 4]));
-                if *cur_w + pw + cw > max {
-                    cur.push(Span::new(std::mem::take(&mut piece), span.style));
-                    *cur_w += pw;
-                    pw = 0;
-                    push_cur(out, cur, cur_w);
-                }
-                piece.push(c);
-                pw += cw;
-            }
-            if !piece.is_empty() {
-                cur.push(Span::new(piece, span.style));
-                *cur_w += pw;
-            }
-            word.clear();
-        };
+            push_char(cur, c, style);
+            *cur_w += cw(c);
+        }
+    };
+    for span in &line.spans {
         for c in span.text.chars() {
             match c {
                 '\n' => {
@@ -112,19 +114,27 @@ pub fn wrap_line(line: &Line, max: usize, indent: &str) -> Vec<Line> {
                     push_cur(&mut out, &mut cur, &mut cur_w);
                 }
                 ' ' => {
-                    word.push(' ');
+                    word.push((' ', span.style));
                     flush(&mut word, &mut out, &mut cur, &mut cur_w);
                 }
-                c => word.push(c),
+                c => word.push((c, span.style)),
             }
         }
-        flush(&mut word, &mut out, &mut cur, &mut cur_w);
     }
+    flush(&mut word, &mut out, &mut cur, &mut cur_w);
     trim_end(&mut cur);
     if !cur.spans.is_empty() || out.is_empty() {
         out.push(cur);
     }
     out
+}
+
+/// Appends to the last span when it has the same style.
+fn push_char(line: &mut Line, c: char, style: Style) {
+    match line.spans.last_mut() {
+        Some(last) if last.style == style => last.text.push(c),
+        _ => line.push(Span::new(c.to_string(), style)),
+    }
 }
 
 fn trim_end(line: &mut Line) {
@@ -232,6 +242,26 @@ mod tests {
         assert_eq!(texts(&wrap_line(&l, 6, "")), vec!["abcdef", "ghijkl", "mnop"]);
         let l = Line::raw("a\nb");
         assert_eq!(texts(&wrap_line(&l, 6, "  ")), vec!["a", "  b"]);
+    }
+
+    #[test]
+    fn words_cross_spans() {
+        // "use `fold`, then" must not leave the comma alone on a line.
+        let code = Style::new().bold();
+        let l = Line::new(vec![
+            Span::raw("use "),
+            Span::new("fold", code),
+            Span::raw(", then"),
+        ]);
+        let out = wrap_line(&l, 8, "");
+        assert_eq!(texts(&out), vec!["use", "fold,", "then"]);
+        assert_eq!(out[1].spans[0].style, code, "the word keeps both styles");
+        assert_eq!(out[1].spans[1].text, ",");
+        let hang = Line::styled("│ ", code);
+        assert_eq!(
+            texts(&wrap_hang(&Line::raw("abcdefgh"), 6, &hang)),
+            vec!["abcdef", "│ gh"]
+        );
     }
 
     #[test]

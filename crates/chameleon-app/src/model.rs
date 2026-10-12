@@ -62,6 +62,8 @@ pub struct App {
     pub(crate) slots: Vec<Slot>,
     pub(crate) selected: Option<SessionKey>,
     pub(crate) focus: Pane,
+    /// The session list is open (it also hides in narrow terminals).
+    pub(crate) sidebar_shown: bool,
     pub(crate) composer: Composer,
     pub(crate) overlay: Option<Overlay>,
     pub(crate) toasts: VecDeque<Toast>,
@@ -115,8 +117,8 @@ fn urandom() -> [u8; 15] {
 
 impl App {
     pub fn new(cfg: Config, client_tag: impl Into<String>) -> Self {
-        let mut problems = Vec::new();
-        let theme = Theme::from_config(&cfg.theme, &mut problems);
+        let mut problems = cfg.problems.clone();
+        let theme = Theme::from_config(&cfg.theme, &cfg.custom_themes, &mut problems);
         let mut keymap = Keymap::default();
         let overrides = cfg.keys.iter().map(|(k, v)| (k.clone(), v.to_vec())).collect();
         problems.extend(keymap.apply(&overrides));
@@ -145,6 +147,7 @@ impl App {
                 error: None,
             })
             .collect();
+        let sidebar_shown = cfg.general.show_sidebar;
         Self {
             cfg,
             theme,
@@ -152,7 +155,12 @@ impl App {
             hosts,
             slots: Vec::new(),
             selected: None,
-            focus: Pane::Sidebar,
+            focus: if sidebar_shown {
+                Pane::Sidebar
+            } else {
+                Pane::Transcript
+            },
+            sidebar_shown,
             composer: Composer::default(),
             overlay: None,
             toasts: VecDeque::new(),
@@ -194,6 +202,34 @@ impl App {
 
     pub fn focus(&self) -> Pane {
         self.focus
+    }
+
+    pub fn sidebar_shown(&self) -> bool {
+        self.sidebar_shown
+    }
+
+    /// The theme's id or name, `None` for the terminal's colours.
+    pub fn theme_name(&self) -> Option<&str> {
+        self.cfg.theme.name.as_deref()
+    }
+
+    /// Switches the theme (the config's overrides still apply on top).
+    pub(crate) fn apply_theme(&mut self, name: Option<&str>) {
+        self.cfg.theme.name = name.map(str::to_owned);
+        self.theme = Theme::from_config(&self.cfg.theme, &self.cfg.custom_themes, &mut Vec::new());
+        // Cached transcript lines carry the old colours.
+        for s in &mut self.slots {
+            s.wrap.clear();
+        }
+        self.dirty = true;
+    }
+
+    /// Every theme for the picker: custom ones, then dark, then light.
+    pub(crate) fn theme_choices(&self) -> Vec<crate::themes::ThemeDef> {
+        let mut builtin = crate::themes::builtin();
+        builtin.retain(|b| !self.cfg.custom_themes.iter().any(|c| c.id == b.id));
+        builtin.sort_by_key(|t| (t.is_light(), t.name.to_lowercase()));
+        self.cfg.custom_themes.iter().cloned().chain(builtin).collect()
     }
 
     pub fn overlay(&self) -> Option<&Overlay> {
@@ -321,6 +357,21 @@ impl App {
         self.dirty = true;
     }
 
+    /// Records a host problem; new problems are also shown as a toast.
+    pub(crate) fn host_error(&mut self, host: &str, error: Option<String>) {
+        let changed = match self.host_mut(host) {
+            Some(h) => {
+                let changed = h.error != error;
+                h.error = error.clone();
+                changed
+            }
+            None => false,
+        };
+        if changed && let Some(e) = error {
+            self.toast(format!("{host}: {}", e.lines().last().unwrap_or(&e)), true);
+        }
+    }
+
     /// Re-lists sessions on a host.
     pub(crate) fn refresh_host(&mut self, i: usize) -> Vec<Effect> {
         let host = self.hosts[i].cfg.name.clone();
@@ -394,7 +445,7 @@ impl App {
         {
             match kind {
                 MouseKind::Click => {
-                    let row = (y.saturating_sub(sb.y + 1)) as usize;
+                    let row = (y.saturating_sub(sb.y)) as usize;
                     if let Some(Some(key)) = self.layout.sidebar_hits.get(row).cloned() {
                         self.select(key);
                     }
@@ -513,14 +564,36 @@ impl App {
                 Vec::new()
             }
             Action::FocusNext | Action::FocusPrev => {
-                let order = [Pane::Sidebar, Pane::Transcript, Pane::Composer];
+                // A hidden list stays hidden: cycle between the other two.
+                let order: &[Pane] = if self.sidebar_shown {
+                    &[Pane::Sidebar, Pane::Transcript, Pane::Composer]
+                } else {
+                    &[Pane::Transcript, Pane::Composer]
+                };
+                let n = order.len();
                 let i = order.iter().position(|p| *p == self.focus).unwrap_or(0);
-                let n = if action == Action::FocusNext { i + 1 } else { i + 2 };
-                self.focus = order[n % 3];
+                let next = if action == Action::FocusNext {
+                    i + 1
+                } else {
+                    i + n - 1
+                };
+                self.focus = order[next % n];
                 Vec::new()
             }
             Action::FocusSidebar => {
+                self.sidebar_shown = true;
                 self.focus = Pane::Sidebar;
+                Vec::new()
+            }
+            Action::Theme => {
+                self.overlay = Some(Overlay::themes(self));
+                Vec::new()
+            }
+            Action::ToggleSidebar => {
+                self.sidebar_shown = !self.sidebar_shown;
+                if !self.sidebar_shown && self.focus == Pane::Sidebar {
+                    self.focus = Pane::Transcript;
+                }
                 Vec::new()
             }
             Action::FocusTranscript => {
@@ -536,7 +609,8 @@ impl App {
                 self.focus = match self.focus {
                     Pane::Composer if self.composer.is_empty() => Pane::Transcript,
                     Pane::Composer => Pane::Composer,
-                    Pane::Transcript => Pane::Sidebar,
+                    Pane::Transcript if self.sidebar_shown => Pane::Sidebar,
+                    Pane::Transcript => Pane::Transcript,
                     Pane::Sidebar => Pane::Sidebar,
                 };
                 Vec::new()

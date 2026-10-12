@@ -13,6 +13,7 @@ pub mod overlay;
 mod pump;
 pub mod slot;
 pub mod style;
+pub mod themes;
 pub mod view;
 pub mod wrap;
 

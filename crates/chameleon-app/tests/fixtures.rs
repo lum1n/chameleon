@@ -533,6 +533,52 @@ fn palette_runs_harness_commands_with_arguments() {
 }
 
 #[test]
+fn sidebar_collapses_and_the_header_keeps_the_tally() {
+    let mut a = app();
+    let (key, _) = launch(&mut a, Harness::Claude, "");
+    a.handle(
+        AppEvent::ExecDone {
+            host: key.host.clone(),
+            tag: ExecTag::Launch(key.id.clone()),
+            result: ok("1\n"),
+        },
+        1,
+    );
+    feed(&mut a, &key, CLAUDE_HI, 2);
+    assert!(a.screen().sidebar.is_some());
+    a.handle(press(KeyCode::Esc), 3); // leave the composer
+    a.handle(ch('b'), 3);
+    let screen = a.screen();
+    assert!(screen.sidebar.is_none(), "b hides the list");
+    assert!(!a.sidebar_shown());
+    assert!(
+        screen.header.text().contains("ctrl-b"),
+        "{}",
+        screen.header.text()
+    );
+    assert!(
+        screen.transcript.rect.x <= 1,
+        "the transcript takes the whole width: {:?}",
+        screen.transcript.rect
+    );
+    // Tab cycles without landing on the hidden list; h brings it back.
+    a.handle(press(KeyCode::Tab), 4);
+    a.handle(press(KeyCode::Tab), 4);
+    assert_ne!(a.focus(), chameleon_app::Pane::Sidebar);
+    a.handle(press(KeyCode::Esc), 5);
+    a.handle(ch('h'), 5);
+    assert!(a.sidebar_shown());
+    assert_eq!(a.focus(), chameleon_app::Pane::Sidebar);
+    a.handle(ctrl('b'), 6);
+    assert!(!a.sidebar_shown());
+    assert_eq!(
+        a.focus(),
+        chameleon_app::Pane::Transcript,
+        "focus leaves the hidden list"
+    );
+}
+
+#[test]
 fn keys_navigate_and_quit() {
     let mut a = app();
     let fx = a.handle(ch('q'), 1);
@@ -541,4 +587,149 @@ fn keys_navigate_and_quit() {
     assert!(a.screen().overlay.is_some_and(|o| o.title == "help"));
     a.handle(press(KeyCode::Esc), 3);
     assert!(a.overlay().is_none());
+}
+
+/// A live Claude session fed the recorded handshake, for palette tests.
+fn claude_ready(a: &mut App) -> SessionKey {
+    let (key, _) = launch(a, Harness::Claude, "");
+    a.handle(
+        AppEvent::ExecDone {
+            host: key.host.clone(),
+            tag: ExecTag::Launch(key.id.clone()),
+            result: ok("1\n"),
+        },
+        1,
+    );
+    feed(a, &key, CLAUDE_HI, 2);
+    key
+}
+
+fn palette(a: &mut App, text: &str) -> Vec<Effect> {
+    a.handle(ch('/'), 3);
+    for c in text.chars() {
+        a.handle(ch(c), 3);
+    }
+    a.handle(press(KeyCode::Enter), 4)
+}
+
+/// What the effects write to the harness, as JSON lines.
+fn written(fx: &[Effect]) -> Vec<serde_json::Value> {
+    fx.iter()
+        .filter_map(|e| match e {
+            Effect::Input { exec, .. } => Some(String::from_utf8_lossy(&exec.stdin).into_owned()),
+            _ => None,
+        })
+        .flat_map(|s| {
+            s.lines()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[test]
+fn option_commands_open_a_picker() {
+    use chameleon_app::overlay::Overlay;
+    let mut a = app();
+    let _key = claude_ready(&mut a);
+    let fx = palette(&mut a, "mode");
+    assert!(
+        written(&fx).is_empty(),
+        "nothing is sent before a value is picked"
+    );
+    let Some(Overlay::Pick { choices, command, .. }) = a.overlay() else {
+        panic!("expected a picker, got {:?}", a.overlay());
+    };
+    assert_eq!(command, "mode");
+    let plan = choices
+        .iter()
+        .position(|c| c.value == "plan")
+        .expect("plan mode is offered");
+    let at = match a.overlay() {
+        Some(Overlay::Pick { selected, .. }) => *selected,
+        _ => 0,
+    };
+    for _ in 0..(plan + choices.len() - at) % choices.len() {
+        a.handle(press(KeyCode::Down), 5);
+    }
+    let fx = a.handle(press(KeyCode::Enter), 6);
+    let sent = written(&fx);
+    assert_eq!(sent[0]["request"]["subtype"], "set_permission_mode");
+    assert_eq!(sent[0]["request"]["mode"], "plan");
+    assert!(a.overlay().is_none());
+
+    // A typed value skips the picker.
+    let fx = palette(&mut a, "mode acceptEdits");
+    assert_eq!(written(&fx)[0]["request"]["mode"], "acceptEdits");
+}
+
+#[test]
+fn panels_open_refresh_and_run_actions() {
+    use chameleon_app::overlay::Overlay;
+    let mut a = app();
+    let key = claude_ready(&mut a);
+    let fx = palette(&mut a, "mcp");
+    let req = written(&fx).remove(0);
+    assert_eq!(req["request"]["subtype"], "mcp_status");
+    let reply = |id: &serde_json::Value, status: &str| {
+        serde_json::json!({"type": "control_response", "response": {"subtype": "success", "request_id": id,
+            "response": {"mcpServers": [{"name": "sentry", "status": status, "scope": "user", "config": {"type": "http"}}]}}})
+        .to_string()
+    };
+    feed(&mut a, &key, &reply(&req["request_id"], "failed"), 5);
+    assert!(matches!(a.overlay(), Some(Overlay::Panel { id, .. }) if id == "mcp"));
+    let shown = format!("{:?}", a.screen());
+    assert!(
+        shown.contains("sentry") && shown.contains("Reconnect"),
+        "the panel is drawn"
+    );
+
+    // Enter runs the first action; the panel stays open for the refresh.
+    let fx = a.handle(press(KeyCode::Enter), 6);
+    let sent = written(&fx);
+    assert_eq!(sent[0]["request"]["subtype"], "mcp_reconnect");
+    assert_eq!(sent[0]["request"]["serverName"], "sentry");
+    assert!(matches!(a.overlay(), Some(Overlay::Panel { .. })));
+    let ack = serde_json::json!({"type": "control_response", "response": {"subtype": "success", "request_id": sent[0]["request_id"], "response": {}}}).to_string();
+    let fx = feed(&mut a, &key, &ack, 7);
+    let again = written(&fx).remove(0);
+    assert_eq!(again["request"]["subtype"], "mcp_status");
+    feed(&mut a, &key, &reply(&again["request_id"], "connected"), 8);
+    let slot = a.selected().unwrap();
+    assert_eq!(
+        slot.panels["mcp"].sections[0].rows[0].value.as_deref(),
+        Some("connected")
+    );
+    a.handle(press(KeyCode::Esc), 9);
+    assert!(a.overlay().is_none());
+}
+
+#[test]
+fn terminal_only_commands_open_the_harness_tui() {
+    let mut a = app();
+    claude_ready(&mut a);
+    let fx = palette(&mut a, "doctor");
+    assert!(written(&fx).is_empty());
+    let argv = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::Terminal { argv } => Some(argv.clone()),
+            _ => None,
+        })
+        .expect("opens the TUI");
+    assert_eq!(argv[..2], ["sh", "-c"]);
+    assert!(
+        argv[2].starts_with("cd /work && exec ") && argv[2].contains("claude"),
+        "{argv:?}"
+    );
+}
+
+#[test]
+fn a_missing_argument_is_reported_not_sent() {
+    let mut a = app();
+    claude_ready(&mut a);
+    let fx = palette(&mut a, "mcp reconnect");
+    assert!(written(&fx).is_empty());
+    assert!(a.overlay().is_none());
+    assert!(format!("{:?}", a.screen()).contains("MCP server name"));
 }

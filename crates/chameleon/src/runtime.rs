@@ -212,6 +212,38 @@ impl Runtime {
                         f.unfollow(&key);
                     }
                 }
+                Effect::SaveTheme { name } => {
+                    if let Err(e) = crate::save_theme(name.as_deref()) {
+                        let _ = self.tx.send(AppEvent::Notice {
+                            text: format!("can't save the theme: {e}"),
+                            error: true,
+                        });
+                    }
+                }
+                Effect::Terminal { argv } => {
+                    let Some((program, args)) = argv.split_first() else {
+                        continue;
+                    };
+                    log::info!("terminal: {argv:?}");
+                    let _ = crate::leave(terminal);
+                    let status = std::process::Command::new(program).args(args).status();
+                    let _ = crate::enter(terminal);
+                    match status {
+                        Ok(s) if s.success() => {}
+                        Ok(s) => {
+                            let _ = self.tx.send(AppEvent::Notice {
+                                text: format!("{program} exited with {s}"),
+                                error: true,
+                            });
+                        }
+                        Err(e) => {
+                            let _ = self.tx.send(AppEvent::Notice {
+                                text: format!("can't run {program}: {e}"),
+                                error: true,
+                            });
+                        }
+                    }
+                }
                 Effect::Hook {
                     name,
                     command,

@@ -192,11 +192,13 @@ pub enum Action {
     Approve,
     Deny,
     ToggleExpand,
+    ToggleSidebar,
+    Theme,
     Jump(u8),
 }
 
 impl Action {
-    pub const ALL: [Action; 30] = [
+    pub const ALL: [Action; 32] = [
         Action::Quit,
         Action::Help,
         Action::SelectUp,
@@ -226,6 +228,8 @@ impl Action {
         Action::Approve,
         Action::Deny,
         Action::ToggleExpand,
+        Action::ToggleSidebar,
+        Action::Theme,
         Action::Jump(0),
     ];
 
@@ -278,6 +282,8 @@ impl Action {
             Action::Approve => "approve the first request",
             Action::Deny => "deny the first request",
             Action::ToggleExpand => "expand / collapse item",
+            Action::ToggleSidebar => "show / hide the session list",
+            Action::Theme => "colour theme",
             Action::Jump(_) => "jump to session 1-9, 0",
         }
     }
@@ -314,6 +320,7 @@ impl Default for Keymap {
             (Key::ctrl(Char('u')), Action::PageUp),
             (Key::ctrl(Char('e')), Action::PageDown),
             (Key::ctrl(Char('g')), Action::FollowTail),
+            (Key::ctrl(Char('b')), Action::ToggleSidebar),
             (Key::new(Tab), Action::FocusNext),
             (Key::new(BackTab), Action::FocusPrev),
             (Key::new(Esc), Action::Back),
@@ -352,6 +359,8 @@ impl Default for Keymap {
             (Key::char('N'), Action::Deny),
             (Key::char('i'), Action::FocusComposer),
             (Key::char(' '), Action::ToggleExpand),
+            (Key::char('b'), Action::ToggleSidebar),
+            (Key::char('T'), Action::Theme),
             (Key::char('h'), Action::FocusSidebar),
             (Key::char('l'), Action::FocusTranscript),
         ];

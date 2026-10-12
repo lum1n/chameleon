@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use acc_core::detached::Status;
-use acc_core::event::ItemId;
+use acc_core::event::{ItemId, Panel};
 use acc_core::session::{Session, SessionSpec};
 use acc_core::state::{BlockKind, RunState};
 
@@ -111,6 +111,8 @@ pub struct Slot {
     pub error: Option<String>,
     /// The log size reported by the status script, for exited sessions.
     pub log_size: Option<u64>,
+    /// The latest dialog the harness answered with, by palette entry.
+    pub panels: HashMap<String, Panel>,
 }
 
 impl Slot {
@@ -133,6 +135,7 @@ impl Slot {
             kill_after_launch: None,
             error: None,
             log_size: None,
+            panels: HashMap::new(),
         }
     }
 

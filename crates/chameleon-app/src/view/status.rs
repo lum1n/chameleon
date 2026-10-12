@@ -7,24 +7,30 @@ use crate::model::{App, FeedStatus};
 use crate::overlay::option_label;
 use crate::slot::Urgency;
 use crate::style::{Line, Span, Style};
+use crate::view::spinner;
 use crate::wrap::{truncate, width};
+
+/// Cells in the context meter.
+const METER_W: u64 = 6;
 
 pub fn build(app: &App, w: usize) -> Line {
     let t = app.theme;
     let muted = Style::new().fg(t.muted);
+    let sep = Span::new("│ ", muted);
     let mut line = Line::default();
     let Some(slot) = app.selected() else {
-        line.push(Span::new(" chameleon ", Style::new().fg(t.accent).bold()));
-        line.push(Span::new("? help  n new  q quit", muted));
+        line.push(Span::new(" ◆ ", Style::new().fg(t.accent).bold()));
+        line.push(Span::new("? help · n new · q quit", muted));
         return line;
     };
     let (glyph, word) = slot.badge();
-    let color = match slot.urgency() {
-        Urgency::Blocked => t.permission,
-        Urgency::Error => t.error,
-        Urgency::Working => t.thinking,
-        Urgency::Done => t.done,
-        _ => t.muted,
+    let (glyph, color) = match slot.urgency() {
+        Urgency::Blocked => (glyph, t.permission),
+        Urgency::Error => (glyph, t.error),
+        Urgency::Working if glyph == "⚙" => (glyph, t.tool),
+        Urgency::Working => (spinner(app.now_ms), t.thinking),
+        Urgency::Done => (glyph, t.done),
+        _ => (glyph, t.muted),
     };
     line.push(Span::new(
         format!(" {glyph} {word} "),
@@ -47,30 +53,41 @@ pub fn build(app: &App, w: usize) -> Line {
             }
         }
         if !opts.is_empty() {
-            line.push(Span::new("│ ", muted));
-            line.push(Span::new(format!("{} ", opts.join("  ")), Style::new()));
+            line.push(sep.clone());
+            line.push(Span::new(format!("{} ", opts.join(" · ")), Style::new()));
         }
         let u = session.usage();
-        let mut usage = Vec::new();
+        let mut usage: Vec<Span> = Vec::new();
         if let (Some(used), Some(window)) = (u.context_used, u.context_window)
             && window > 0
         {
-            let pct = used * 100 / window;
-            usage.push(format!("ctx {pct}%"));
+            let pct = (used * 100 / window).min(100);
+            let hot = pct >= 80;
+            usage.push(Span::new("ctx ", muted));
+            usage.push(Span::new(
+                meter(pct),
+                Style::new().fg(if hot { t.permission } else { t.accent }),
+            ));
+            usage.push(Span::new(format!(" {pct}%"), Style::new()));
         } else if let Some(used) = u.context_used {
-            usage.push(format!("ctx {}", short(used)));
+            usage.push(Span::new("ctx ", muted));
+            usage.push(Span::new(short(used), Style::new()));
         }
         if let Some(c) = u.cost_usd {
-            usage.push(format!("${c:.2}"));
+            if !usage.is_empty() {
+                usage.push(Span::new(" · ", muted));
+            }
+            usage.push(Span::new(format!("${c:.2}"), Style::new()));
         }
         if let (Some(i), Some(o)) = (u.input_tokens, u.output_tokens)
             && usage.is_empty()
         {
-            usage.push(format!("{}↑ {}↓", short(i), short(o)));
+            usage.push(Span::new(format!("{}↑ {}↓", short(i), short(o)), Style::new()));
         }
         if !usage.is_empty() {
-            line.push(Span::new("│ ", muted));
-            line.push(Span::new(format!("{} ", usage.join(" ")), Style::new()));
+            line.push(sep.clone());
+            line.spans.extend(usage);
+            line.push(Span::raw(" "));
         }
         if let Some(q) = session.quota() {
             let mut parts = Vec::new();
@@ -80,7 +97,7 @@ pub fn build(app: &App, w: usize) -> Line {
                 }
             }
             if !parts.is_empty() {
-                line.push(Span::new("│ ", muted));
+                line.push(sep.clone());
                 let hot = q
                     .windows
                     .iter()
@@ -111,7 +128,7 @@ pub fn build(app: &App, w: usize) -> Line {
                 acc_core::item::ItemDetail::Text => String::new(),
             };
             if !what.is_empty() {
-                line.push(Span::new("│ ", muted));
+                line.push(sep.clone());
                 line.push(Span::new(
                     truncate(&what.replace('\n', " "), 40),
                     Style::new().fg(t.tool),
@@ -123,14 +140,14 @@ pub fn build(app: &App, w: usize) -> Line {
     if let Some(h) = app.host(&slot.key.host)
         && let FeedStatus::Down(e) = &h.feed
     {
-        line.push(Span::new("│ ", muted));
+        line.push(sep.clone());
         line.push(Span::new(
             format!("feed down: {} ", truncate(e, 30)),
             Style::new().fg(t.error),
         ));
     }
     if let Some(e) = &slot.error {
-        line.push(Span::new("│ ", muted));
+        line.push(sep);
         line.push(Span::new(truncate(e, 40), Style::new().fg(t.error)));
     }
     let right = "? help";
@@ -140,6 +157,12 @@ pub fn build(app: &App, w: usize) -> Line {
         line.push(Span::new(right, muted));
     }
     line
+}
+
+/// `▰▰▰▱▱▱` for a percentage.
+fn meter(pct: u64) -> String {
+    let full = (pct * METER_W).div_ceil(100).min(METER_W) as usize;
+    format!("{}{}", "▰".repeat(full), "▱".repeat(METER_W as usize - full))
 }
 
 fn short(n: u64) -> String {

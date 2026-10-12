@@ -9,19 +9,16 @@ use acc_core::transcript::{Item, ItemStatus};
 use crate::config::Theme;
 use crate::markdown::{self, MdStyle};
 use crate::model::{App, Pane};
-use crate::slot::{Phase, Slot};
+use crate::slot::Phase;
 use crate::style::{Color, Line, Span, Style};
-use crate::view::{PaneView, Rect, Scrollbar};
-use crate::wrap::{truncate, wrap_line};
-
-/// Output lines kept for a folded command or tool result.
-const FOLD_TAIL: usize = 6;
+use crate::view::{PaneView, Rect, Scrollbar, spinner};
+use crate::wrap::{truncate, width, wrap_hang, wrap_line};
 
 pub fn build(app: &mut App, rect: Rect) -> PaneView {
-    let inner = rect.inner();
-    let w = (inner.w as usize).max(4);
-    let h = inner.h as usize;
+    let w = (rect.w as usize).max(4);
+    let h = rect.h as usize;
     let theme = app.theme;
+    let spin = spinner(app.now_ms);
     let focused = app.focus == Pane::Transcript;
     let key = app.selected.clone();
     let Some(slot) = key
@@ -34,7 +31,6 @@ pub fn build(app: &mut App, rect: Rect) -> PaneView {
             &["no session selected", "", "n  start one", "j/k  pick one"],
         );
     };
-    let title = title_line(slot, &theme);
     let Some(session) = &slot.session else {
         let msg: &[&str] = match slot.phase {
             Phase::Listed if slot.is_alive() => &["press enter to attach"],
@@ -46,11 +42,15 @@ pub fn build(app: &mut App, rect: Rect) -> PaneView {
             ],
             _ => &["starting…"],
         };
-        let mut v = empty(rect, &theme, msg);
-        v.title = title;
-        return v;
+        return empty(rect, &theme, msg);
     };
-    let harness = session.spec().harness;
+    let ctx = ItemCtx {
+        harness: session.spec().harness,
+        theme: &theme,
+        w,
+        spin,
+        cwd: &session.spec().cwd,
+    };
     let items = session.transcript().items();
     let cursor = slot.cursor.filter(|c| *c < items.len());
 
@@ -59,15 +59,20 @@ pub fn build(app: &mut App, rect: Rect) -> PaneView {
     let mut total = 0usize;
     for (idx, item) in items.iter().enumerate() {
         let rev = slot.revisions.get(&item.id).copied().unwrap_or(0);
-        let expanded = slot.expanded.contains(&item.id);
-        let selected = cursor == Some(idx);
-        let rev = rev.wrapping_mul(4) + u64::from(expanded) * 2 + u64::from(selected);
+        let look = Look {
+            expanded: slot.expanded.contains(&item.id),
+            selected: cursor == Some(idx),
+            // Steps of one turn (thinking, tools) stack without gaps.
+            gap: !(is_step(item) && items.get(idx + 1).is_some_and(is_step)),
+        };
+        let rev = rev.wrapping_mul(8)
+            + u64::from(look.gap) * 4
+            + u64::from(look.expanded) * 2
+            + u64::from(look.selected);
         let cacheable = item.status != ItemStatus::Running;
         let n = slot
             .wrap
-            .get_or_build(&item.id, w, rev, cacheable, || {
-                render_item(item, harness, expanded, selected, &theme, w)
-            })
+            .get_or_build(&item.id, w, rev, cacheable, || render_item(item, look, &ctx))
             .len();
         heights.push(n);
         total += n;
@@ -151,7 +156,6 @@ pub fn build(app: &mut App, rect: Rect) -> PaneView {
     }
     PaneView {
         rect,
-        title,
         lines,
         focused,
         cursor: None,
@@ -165,13 +169,13 @@ pub fn build(app: &mut App, rect: Rect) -> PaneView {
 }
 
 fn empty(rect: Rect, theme: &Theme, msg: &[&str]) -> PaneView {
+    // Centred vertically: an empty transcript is a landing page.
+    let pad = (rect.h as usize).saturating_sub(msg.len()) / 2;
+    let mut lines = vec![Line::default(); pad];
+    lines.extend(msg.iter().map(|m| Line::styled(*m, Style::new().fg(theme.muted))));
     PaneView {
         rect,
-        title: Line::default(),
-        lines: msg
-            .iter()
-            .map(|m| Line::styled(*m, Style::new().fg(theme.muted)))
-            .collect(),
+        lines,
         focused: false,
         cursor: None,
         scrollbar: None,
@@ -179,239 +183,568 @@ fn empty(rect: Rect, theme: &Theme, msg: &[&str]) -> PaneView {
     }
 }
 
-fn title_line(slot: &Slot, theme: &Theme) -> Line {
-    let mut l = Line::new(vec![Span::new(
-        format!(" {} ", slot.title()),
-        Style::new().bold(),
-    )]);
-    l.push(Span::new(
-        format!("{} · {} ", slot.spec.cwd, slot.harness().display_name()),
-        Style::new().fg(theme.muted),
-    ));
-    if let Some(m) = &slot.spec.model {
-        l.push(Span::new(format!("{m} "), Style::new().fg(theme.muted)));
-    }
-    l
-}
-
+/// Open requests as cards at the end of the transcript.
+///
+/// ```text
+/// ╭─ ⚠ approval ───────────────────────────────╮
+/// │ Bash wants to run a command                 │
+/// │ $ cargo test --workspace                    │
+/// │ ❯ 1 Allow   2 Always allow   3 Deny         │
+/// ╰─────────────── y approve · N deny · enter ──╯
+/// ```
 fn pending_lines(session: &acc_core::session::Session, theme: &Theme, w: usize) -> Vec<Line> {
-    let mut out = vec![Line::default()];
+    let mut out = Vec::new();
+    let cw = w.saturating_sub(4).max(8);
     for p in session.permissions() {
-        let glyph = if p.kind == acc_core::BlockKind::Question {
-            "?"
+        let question = p.kind == acc_core::BlockKind::Question;
+        let mut body = wrap_line(&Line::styled(p.title.clone(), Style::new().bold()), cw, "");
+        let preview = request_preview(session, p, theme, cw);
+        let more = preview.len() > 3;
+        body.extend(preview.into_iter().take(3));
+        if more {
+            body.push(Line::styled("…", Style::new().fg(theme.muted)));
+        }
+        let mut opts = Line::default();
+        for (i, o) in p.options.iter().enumerate() {
+            if i > 0 {
+                opts.push(Span::raw("   "));
+            }
+            opts.push(Span::new(format!("{} ", i + 1), Style::new().fg(theme.muted)));
+            opts.push(Span::new(
+                o.label.clone(),
+                Style::new().fg(option_tone(&o.id, &o.label, theme)),
+            ));
+        }
+        body.extend(wrap_line(&opts, cw, ""));
+        let (title, footer) = if question {
+            ("? question", "enter: answer")
         } else {
-            "⚠"
+            ("⚠ approval", "y approve · N deny · enter: card")
         };
-        let mut head = Line::new(vec![Span::new(
-            format!("{glyph} "),
-            Style::new().fg(theme.permission).bold(),
-        )]);
-        head.push(Span::new(
-            p.title.clone(),
-            Style::new().fg(theme.permission).bold(),
-        ));
-        out.extend(wrap_line(&head, w, "  "));
-        let opts: Vec<String> = p
-            .options
-            .iter()
-            .enumerate()
-            .map(|(i, o)| format!("{} {}", i + 1, o.label))
-            .collect();
-        let mut l = Line::new(vec![Span::new("  ", Style::new())]);
-        l.push(Span::new(opts.join("   "), Style::new().fg(theme.permission)));
-        l.push(Span::new("   y approve · N deny", Style::new().fg(theme.muted)));
-        out.extend(wrap_line(&l, w, "  "));
+        out.push(Line::default());
+        out.extend(card(body, title, footer, theme.permission, theme.muted, w));
     }
     out
 }
 
-/// Renders one item to unwrapped-then-wrapped lines of width `w`.
-pub fn render_item(
-    item: &Item,
-    harness: Harness,
-    expanded: bool,
-    selected: bool,
+/// `body` in a rounded box `w` wide, with a title and a footer in its rules.
+pub(crate) fn card(
+    body: Vec<Line>,
+    title: &str,
+    footer: &str,
+    tone: Color,
+    muted: Color,
+    w: usize,
+) -> Vec<Line> {
+    let w = w.max(12);
+    let cw = w - 4;
+    let rule = Style::new().fg(tone);
+    let title = truncate(title, cw.saturating_sub(2));
+    let footer = truncate(footer, cw.saturating_sub(2));
+    let mut out = vec![Line::new(vec![
+        Span::new("╭─ ", rule),
+        Span::new(title.clone(), rule.bold()),
+        Span::new(
+            format!(" {}╮", "─".repeat(w.saturating_sub(width(&title) + 5))),
+            rule,
+        ),
+    ])];
+    for mut l in body {
+        let pad = cw.saturating_sub(l.width());
+        l.spans.insert(0, Span::new("│ ", rule));
+        l.push(Span::raw(" ".repeat(pad)));
+        l.push(Span::new(" │", rule));
+        out.push(l);
+    }
+    out.push(Line::new(vec![
+        Span::new(
+            format!("╰{} ", "─".repeat(w.saturating_sub(width(&footer) + 5))),
+            rule,
+        ),
+        Span::new(footer, Style::new().fg(muted)),
+        Span::new(" ─╯", rule),
+    ]));
+    out
+}
+
+/// What a request is about: the command, the file change or the tool
+/// call it was raised for, wrapped to `w`.
+pub(crate) fn request_preview(
+    session: &acc_core::session::Session,
+    p: &acc_core::session::Permission,
     theme: &Theme,
     w: usize,
 ) -> Vec<Line> {
-    let mut raw: Vec<Line> = Vec::new();
     let muted = Style::new().fg(theme.muted);
-    let md = MdStyle {
-        base: Style::new().fg(theme.agent),
-        code: Style::new().fg(theme.tool),
-        heading: Style::new().bold().fg(theme.accent),
-        quote: Style::new().dim().italic(),
-        bullet: Style::new().fg(theme.accent),
+    let cwd = session.spec().cwd.as_str();
+    let mut raw: Vec<Line> = Vec::new();
+    let detail = p
+        .item_id
+        .as_ref()
+        .and_then(|id| session.transcript().get(id))
+        .map(|item| item.detail(session.spec().harness));
+    match detail {
+        Some(ItemDetail::Command {
+            command, cwd: dir, ..
+        }) => {
+            raw.push(Line::new(vec![
+                Span::new("$ ", Style::new().fg(theme.tool)),
+                Span::raw(short_command(command.trim(), cwd)),
+            ]));
+            if let Some(d) = dir.filter(|d| d.trim_end_matches('/') != cwd.trim_end_matches('/')) {
+                raw.push(Line::styled(format!("in {d}"), muted));
+            }
+        }
+        Some(ItemDetail::FileChange { files }) => {
+            for f in &files {
+                raw.push(file_head(f, theme));
+                raw.extend(hunks(f, theme));
+            }
+        }
+        Some(ItemDetail::Tool {
+            name, title, input, ..
+        }) => {
+            raw.push(Line::new(vec![
+                Span::new(format!("{name}  "), Style::new().fg(theme.tool)),
+                Span::new(short_path(&title, cwd), muted),
+            ]));
+            raw.extend(json_lines(&input, muted));
+        }
+        Some(ItemDetail::Text) | None => raw.extend(json_lines(&p.input, muted)),
+    }
+    raw.iter().flat_map(|l| wrap_line(l, w, "  ")).collect()
+}
+
+/// `key: value` lines of a JSON object (a tool's input).
+pub(crate) fn json_lines(v: &serde_json::Value, style: Style) -> Vec<Line> {
+    let text = match v {
+        serde_json::Value::Object(m) => m
+            .iter()
+            .map(|(k, v)| {
+                let v = match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                format!("{k}: {v}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
     };
-    let status_mark = match item.status {
-        ItemStatus::Running => Some(Span::new(" …", Style::new().fg(theme.thinking))),
-        ItemStatus::Failed => Some(Span::new(" ✖", Style::new().fg(theme.error))),
-        ItemStatus::Completed => None,
-    };
-    let detail = item.detail(harness);
+    text.lines().map(|l| Line::styled(l.to_owned(), style)).collect()
+}
+
+/// The colour of a request's answer: denials in red, standing grants in
+/// the accent, one-off grants in green.
+pub(crate) fn option_tone(id: &str, label: &str, theme: &Theme) -> Color {
+    let l = label.to_ascii_lowercase();
+    if crate::overlay::is_denial(id, label) {
+        theme.error
+    } else if l.contains("always") || l.contains("session") || l.contains("don't ask") {
+        theme.accent
+    } else {
+        theme.done
+    }
+}
+
+/// What every item renders against.
+#[derive(Debug)]
+pub struct ItemCtx<'a> {
+    pub harness: Harness,
+    pub theme: &'a Theme,
+    pub w: usize,
+    /// The spinner frame shown on running items.
+    pub spin: &'a str,
+    /// The session's directory, trimmed from paths and commands.
+    pub cwd: &'a str,
+}
+
+/// How one item is shown; part of its cache key.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Look {
+    pub expanded: bool,
+    pub selected: bool,
+    /// A blank line after the item.
+    pub gap: bool,
+}
+
+/// Thinking and tool calls: the steps between messages.
+fn is_step(item: &Item) -> bool {
+    !matches!(item.kind, ItemKind::UserMessage | ItemKind::AgentMessage)
+}
+
+/// Output lines shown under a failed or running step.
+const TAIL: usize = 3;
+
+/// Renders one item to lines of width `ctx.w`.
+///
+/// ```text
+/// ▎ fix the failing tests
+///
+/// ∴ Looking at the test output first
+/// • Bash  cargo test                                 exit 101
+///   │ test result: FAILED. 3 passed; 1 failed
+/// • Read  src/lib.rs                                  212 lines
+/// • Edit  src/lib.rs                                     +4 −1
+///
+/// The test compared against the old fixture; it passes now.
+/// ```
+pub fn render_item(item: &Item, look: Look, ctx: &ItemCtx) -> Vec<Line> {
+    let theme = ctx.theme;
+    // Subagent children are indented; the cursor's item gets a marker.
+    let indent = if item.parent.is_some() { 2 } else { 0 };
+    let cw = ctx.w.saturating_sub(indent + usize::from(look.selected)).max(8);
+    let muted = Style::new().fg(theme.muted);
+    let mut out: Vec<Line> = Vec::new();
     match item.kind {
         ItemKind::UserMessage => {
+            let bar = Line::styled("▎ ", Style::new().fg(theme.user).bold());
             let text = item.text.trim_end();
-            for (i, l) in text.lines().enumerate() {
-                let prefix = if i == 0 { "› " } else { "  " };
-                raw.push(Line::new(vec![
-                    Span::new(prefix, Style::new().fg(theme.user).bold()),
-                    Span::new(l, Style::new().fg(theme.user)),
-                ]));
+            for l in text.lines() {
+                let mut line = bar.clone();
+                line.push(Span::new(l, Style::new().fg(theme.user)));
+                out.extend(wrap_hang(&line, cw, &bar));
             }
-            if text.is_empty() {
-                raw.push(Line::styled("› ", Style::new().fg(theme.user).bold()));
+            if out.is_empty() {
+                out.push(bar);
             }
         }
         ItemKind::AgentMessage => {
             let text = item.text.trim_end();
-            if text.is_empty() && item.status == ItemStatus::Running {
-                raw.push(Line::styled("…", Style::new().fg(theme.thinking)));
-            } else {
-                raw.extend(markdown::render(text, &md));
-                if let Some(m) = status_mark
-                    && let Some(last) = raw.last_mut()
-                {
-                    last.push(m);
-                }
-            }
-        }
-        ItemKind::Reasoning => {
-            let text = item.text.trim();
-            if expanded {
-                raw.push(Line::styled("∴ thinking", muted.italic()));
-                for l in text.lines() {
-                    raw.push(Line::styled(format!("  {l}"), muted.italic()));
+            if text.is_empty() {
+                if item.status == ItemStatus::Running {
+                    out.push(Line::styled(ctx.spin, Style::new().fg(theme.thinking)));
                 }
             } else {
-                let first = text.lines().next().unwrap_or("");
-                let mut l = Line::new(vec![Span::new("∴ ", muted)]);
-                let summary = if first.is_empty() {
-                    "thinking".to_owned()
-                } else {
-                    first.to_owned()
+                let md = MdStyle {
+                    base: Style::new().fg(theme.agent),
+                    code: Style::new().fg(theme.tool),
+                    heading: Style::new().bold().fg(theme.accent),
+                    quote: Style::new().fg(theme.muted).italic(),
+                    bullet: Style::new().fg(theme.accent),
+                    muted,
+                    link: Style::new().fg(theme.user).underline(),
                 };
-                l.push(Span::new(truncate(&summary, w.saturating_sub(8)), muted.italic()));
-                if let Some(m) = status_mark {
-                    l.push(m);
-                } else if text.lines().count() > 1 {
-                    l.push(Span::new(" ⌄", muted));
-                }
-                raw.push(l);
-            }
-        }
-        ItemKind::ToolCall | ItemKind::CommandExecution | ItemKind::FileChange => match &detail {
-            ItemDetail::Command {
-                command,
-                output,
-                exit_code,
-                ..
-            } => {
-                let mut head = Line::new(vec![Span::new("$ ", Style::new().fg(theme.tool).bold())]);
-                head.push(Span::new(command.trim(), Style::new().fg(theme.tool)));
-                match exit_code {
-                    Some(0) | None => {}
-                    Some(c) => head.push(Span::new(format!(" exit {c}"), Style::new().fg(theme.error))),
-                }
-                if let Some(m) = status_mark {
-                    head.push(m);
-                }
-                raw.push(head);
-                raw.extend(folded(output, expanded, muted));
-            }
-            ItemDetail::Tool {
-                name, title, output, ..
-            } => {
-                let mut head = Line::new(vec![Span::new("⚙ ", Style::new().fg(theme.tool).bold())]);
-                head.push(Span::new(name.clone(), Style::new().fg(theme.tool).bold()));
-                if !title.is_empty() {
-                    head.push(Span::new(
-                        format!(" {}", title.replace('\n', " ")),
-                        Style::new().fg(theme.tool),
+                out.extend(markdown::render(text, &md, cw));
+                if item.status == ItemStatus::Running
+                    && let Some(last) = out.last_mut()
+                {
+                    last.push(Span::new(
+                        format!(" {}", ctx.spin),
+                        Style::new().fg(theme.thinking),
                     ));
                 }
-                if let Some(m) = status_mark {
-                    head.push(m);
-                }
-                raw.push(head);
-                if let Some(o) = output {
-                    raw.extend(folded(o, expanded, muted));
-                } else if !item.text.trim().is_empty() {
-                    raw.extend(folded(&item.text, expanded, muted));
-                }
             }
-            ItemDetail::FileChange { files } => {
-                for f in files {
-                    raw.push(file_head(f, theme));
-                    if expanded {
-                        raw.extend(hunks(f, theme));
-                    }
-                }
-                if files.is_empty() {
-                    raw.push(Line::styled("± file change", Style::new().fg(theme.tool)));
-                }
-                if let Some(m) = status_mark
-                    && let Some(last) = raw.first_mut()
-                {
-                    last.push(m);
-                }
-                if !expanded
-                    && files.iter().any(|f| !f.hunks.is_empty())
-                    && let Some(last) = raw.last_mut()
-                {
-                    last.push(Span::new("  space: diff", muted));
-                }
-            }
-            ItemDetail::Text => {
-                let text = item.text.trim_end();
-                raw.extend(folded(text, expanded, muted));
-                if raw.is_empty() {
-                    raw.push(Line::styled("⚙", Style::new().fg(theme.tool)));
-                }
-            }
-        },
-    }
-    // Children of a subagent are indented.
-    let indent = if item.parent.is_some() { "  " } else { "" };
-    let mut out: Vec<Line> = Vec::new();
-    for l in &raw {
-        let mut l = l.clone();
-        if !indent.is_empty() {
-            l.spans.insert(0, Span::raw(indent));
         }
-        out.extend(wrap_line(&l, w, if indent.is_empty() { "  " } else { "    " }));
-    }
-    if selected {
-        for l in &mut out {
-            if let Some(first) = l.spans.first_mut() {
-                first.style = first.style.bg(Color::DarkGray);
-            }
-            l.spans.insert(0, Span::new("▎", Style::new().fg(theme.accent)));
+        ItemKind::Reasoning => out.extend(reasoning(item, look, ctx, cw)),
+        ItemKind::ToolCall | ItemKind::CommandExecution | ItemKind::FileChange => {
+            out.extend(step(item, look, ctx, cw));
         }
     }
-    out.push(Line::default());
+    for l in &mut out {
+        if indent > 0 {
+            l.spans.insert(0, Span::raw(" ".repeat(indent)));
+        }
+        if look.selected {
+            l.spans.insert(0, Span::new("▌", Style::new().fg(theme.accent)));
+        }
+    }
+    if look.gap {
+        out.push(Line::default());
+    }
     out
 }
 
-fn folded(text: &str, expanded: bool, style: Style) -> Vec<Line> {
+fn reasoning(item: &Item, look: Look, ctx: &ItemCtx, cw: usize) -> Vec<Line> {
+    let muted = Style::new().fg(ctx.theme.muted);
+    let text = item.text.trim();
+    let glyph = if item.status == ItemStatus::Running {
+        Span::new(format!("{} ", ctx.spin), Style::new().fg(ctx.theme.thinking))
+    } else {
+        Span::new("∴ ", muted)
+    };
+    if look.expanded && !text.is_empty() {
+        let md = MdStyle {
+            base: muted.italic(),
+            code: muted,
+            heading: muted.bold(),
+            quote: muted.italic(),
+            bullet: muted,
+            muted,
+            link: muted.underline(),
+        };
+        let mut out = vec![Line::new(vec![glyph, Span::new("thinking", muted.italic())])];
+        for l in markdown::render(text, &md, cw.saturating_sub(2)) {
+            let mut line = Line::raw("  ");
+            line.spans.extend(l.spans);
+            out.push(line);
+        }
+        return out;
+    }
+    // Summaries often come as "**Planning the fix**"; the stars are noise.
+    let first = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("thinking")
+        .replace("**", "");
+    let more = text.lines().filter(|l| !l.trim().is_empty()).count() > 1;
+    let mut line = Line::new(vec![glyph]);
+    let room = cw.saturating_sub(2 + if more { 2 } else { 0 });
+    line.push(Span::new(truncate(first.trim(), room), muted.italic()));
+    if more && look.selected {
+        line.push(Span::new(" ⌄", muted));
+    }
+    vec![line]
+}
+
+/// A tool call, command or file change: one quiet line, its output under
+/// a gutter when it failed, is running, or is expanded.
+fn step(item: &Item, look: Look, ctx: &ItemCtx, cw: usize) -> Vec<Line> {
+    let theme = ctx.theme;
+    let muted = Style::new().fg(theme.muted);
+    let failed = |exit: Option<i32>| item.status == ItemStatus::Failed || exit.is_some_and(|c| c != 0);
+    let glyph = |failed: bool| match item.status {
+        ItemStatus::Running => Span::new(format!("{} ", ctx.spin), Style::new().fg(theme.thinking)),
+        _ if failed => Span::new("✖ ", Style::new().fg(theme.error)),
+        _ => Span::new("• ", Style::new().fg(theme.tool)),
+    };
+    let name = |n: &str| Span::new(format!("{n}  "), Style::new().fg(theme.tool));
+    let mut out = Vec::new();
+    match item.detail(ctx.harness) {
+        ItemDetail::Command {
+            command,
+            output,
+            exit_code,
+            ..
+        } => {
+            let bad = failed(exit_code);
+            let mut meta = Vec::new();
+            match exit_code {
+                Some(c) if c != 0 => meta.push(Span::new(format!("exit {c}"), Style::new().fg(theme.error))),
+                _ if item.status != ItemStatus::Running => meta.extend(count(&output, muted)),
+                _ => {}
+            }
+            let cmd = short_command(command.trim(), ctx.cwd);
+            let head = Line::new(vec![
+                glyph(bad),
+                Span::new("$ ", Style::new().fg(theme.tool)),
+                Span::raw(cmd),
+            ]);
+            out.extend(head_line(head, meta, look, has_more(&output), cw, muted));
+            out.extend(output_lines(&output, look, bad, item.status, ctx, cw));
+        }
+        ItemDetail::Tool {
+            name: tool,
+            title,
+            output,
+            ..
+        } => {
+            let bad = failed(None);
+            let output = output.unwrap_or_else(|| item.text.clone());
+            let meta = if item.status == ItemStatus::Running {
+                Vec::new()
+            } else {
+                count(&output, muted)
+            };
+            let title = short_path(&title.replace('\n', " "), ctx.cwd);
+            let head = Line::new(vec![glyph(bad), name(&tool), Span::new(title, muted)]);
+            out.extend(head_line(head, meta, look, has_more(&output), cw, muted));
+            out.extend(output_lines(&output, look, bad, item.status, ctx, cw));
+        }
+        ItemDetail::FileChange { files } => {
+            use acc_core::item::FileChangeKind::*;
+            let bad = failed(None);
+            for (i, f) in files.iter().enumerate() {
+                let word = match f.kind {
+                    Add => "Add",
+                    Delete => "Delete",
+                    Update => "Edit",
+                    Rename => "Rename",
+                };
+                let mut path = short_path(&f.path, ctx.cwd);
+                if let Some(old) = &f.old_path {
+                    path = format!("{} → {path}", short_path(old, ctx.cwd));
+                }
+                let g = if i == 0 { glyph(bad) } else { Span::raw("  ") };
+                let head = Line::new(vec![g, name(word), Span::raw(path)]);
+                let meta = vec![
+                    Span::new(format!("+{}", f.added), Style::new().fg(theme.add)),
+                    Span::raw(" "),
+                    Span::new(format!("−{}", f.removed), Style::new().fg(theme.remove)),
+                ];
+                out.extend(head_line(head, meta, look, !f.hunks.is_empty(), cw, muted));
+                if look.expanded {
+                    out.extend(diff_lines(f, theme, cw));
+                }
+            }
+            if files.is_empty() {
+                out.push(Line::new(vec![glyph(bad), name("Edit")]));
+            }
+        }
+        ItemDetail::Text => {
+            let text = item.text.trim_end();
+            let first = text.lines().next().unwrap_or("");
+            let rest = text.lines().skip(1).collect::<Vec<_>>().join("\n");
+            let head = Line::new(vec![glyph(failed(None)), Span::new(first.to_owned(), muted)]);
+            out.extend(head_line(
+                head,
+                count(&rest, muted),
+                look,
+                has_more(&rest),
+                cw,
+                muted,
+            ));
+            out.extend(output_lines(&rest, look, failed(None), item.status, ctx, cw));
+        }
+    }
+    out
+}
+
+/// The head of a step: clipped to one line with `meta` at the right edge,
+/// or wrapped in full when expanded.
+fn head_line(head: Line, mut meta: Vec<Span>, look: Look, more: bool, cw: usize, muted: Style) -> Vec<Line> {
+    if look.selected && more {
+        meta.push(Span::new(if look.expanded { "  ⌃" } else { "  ⌄" }, muted));
+    }
+    let meta_w: usize = meta.iter().map(|s| width(&s.text)).sum();
+    if look.expanded {
+        let mut out = wrap_hang(&head, cw, &Line::raw("    "));
+        if let Some(last) = out.last_mut() {
+            let pad = cw.saturating_sub(last.width() + meta_w).max(2);
+            last.push(Span::raw(" ".repeat(pad)));
+            last.spans.extend(meta);
+        }
+        return out;
+    }
+    let room = cw.saturating_sub(if meta_w > 0 { meta_w + 2 } else { 0 });
+    let mut line = clip(&head, room);
+    if meta_w > 0 {
+        line.push(Span::raw(" ".repeat(cw.saturating_sub(line.width() + meta_w))));
+        line.spans.extend(meta);
+    }
+    vec![line]
+}
+
+/// Output under a gutter: all of it when expanded, the tail while it runs
+/// or when the step failed, nothing otherwise.
+fn output_lines(
+    text: &str,
+    look: Look,
+    failed: bool,
+    status: ItemStatus,
+    ctx: &ItemCtx,
+    cw: usize,
+) -> Vec<Line> {
     let text = text.trim_end();
     if text.is_empty() {
         return Vec::new();
     }
     let lines: Vec<&str> = text.lines().collect();
-    let mut out = Vec::new();
-    if expanded || lines.len() <= FOLD_TAIL {
-        for l in lines {
-            out.push(Line::styled(format!("  {l}"), style));
-        }
+    let shown: &[&str] = if look.expanded {
+        &lines
+    } else if failed || status == ItemStatus::Running {
+        &lines[lines.len().saturating_sub(TAIL)..]
     } else {
-        out.push(Line::styled(
-            format!("  … {} more lines (space)", lines.len() - FOLD_TAIL),
-            style.italic(),
-        ));
-        for l in &lines[lines.len() - FOLD_TAIL..] {
-            out.push(Line::styled(format!("  {l}"), style));
+        &[]
+    };
+    let style = if failed && !look.expanded {
+        Style::new().fg(ctx.theme.error)
+    } else {
+        Style::new().fg(ctx.theme.muted)
+    };
+    let gutter = Line::styled("  │ ", Style::new().fg(ctx.theme.muted));
+    let mut out = Vec::new();
+    for l in shown {
+        let mut line = gutter.clone();
+        line.push(Span::new(l.replace('\t', "    "), style));
+        out.extend(wrap_hang(&line, cw, &gutter));
+    }
+    out
+}
+
+fn diff_lines(f: &FileDiff, theme: &Theme, cw: usize) -> Vec<Line> {
+    let gutter = Line::styled("  │ ", Style::new().fg(theme.muted));
+    let mut out = Vec::new();
+    for h in &f.hunks {
+        if h.old_start > 0 || h.new_start > 0 {
+            let mut l = gutter.clone();
+            l.push(Span::new(
+                format!(
+                    "@@ -{},{} +{},{} @@",
+                    h.old_start, h.old_lines, h.new_start, h.new_lines
+                ),
+                Style::new().fg(theme.muted).italic(),
+            ));
+            out.push(l);
         }
+        for dl in &h.lines {
+            let (p, s) = match dl.tag {
+                LineTag::Context => (" ", Style::new().fg(theme.muted)),
+                LineTag::Add => ("+", Style::new().fg(theme.add)),
+                LineTag::Remove => ("-", Style::new().fg(theme.remove)),
+            };
+            let mut l = gutter.clone();
+            l.push(Span::new(format!("{p}{}", dl.text.replace('\t', "    ")), s));
+            out.extend(wrap_hang(&l, cw, &gutter));
+        }
+    }
+    out
+}
+
+/// "212 lines", or nothing for empty output.
+fn count(text: &str, style: Style) -> Vec<Span> {
+    match text.trim_end().lines().count() {
+        0 => Vec::new(),
+        1 => vec![Span::new("1 line", style)],
+        n => vec![Span::new(format!("{n} lines"), style)],
+    }
+}
+
+fn has_more(text: &str) -> bool {
+    !text.trim().is_empty()
+}
+
+/// A path relative to the session's directory when it is inside it.
+fn short_path(s: &str, cwd: &str) -> String {
+    let cwd = cwd.trim_end_matches('/');
+    if cwd.is_empty() {
+        return s.to_owned();
+    }
+    s.replace(&format!("{cwd}/"), "").replace(cwd, ".")
+}
+
+/// The command without a leading `cd <session dir> &&`.
+fn short_command(cmd: &str, cwd: &str) -> String {
+    let cwd = cwd.trim_end_matches('/');
+    for prefix in [
+        format!("cd {cwd} && "),
+        format!("cd \"{cwd}\" && "),
+        format!("cd '{cwd}' && "),
+    ] {
+        if let Some(rest) = cmd.strip_prefix(&prefix) {
+            return rest.to_owned();
+        }
+    }
+    cmd.to_owned()
+}
+
+/// `line` cut to `max` columns, with `…` when cut. Newlines end it.
+fn clip(line: &Line, max: usize) -> Line {
+    let mut out = Line::default();
+    let mut used = 0;
+    for span in &line.spans {
+        let text = span.text.trim_end_matches('\n');
+        let (first, more) = match text.split_once('\n') {
+            Some((first, _)) => (format!("{first} …"), true),
+            None => (text.to_owned(), false),
+        };
+        let fits = used + width(&first) <= max;
+        out.push(Span::new(truncate(&first, max.saturating_sub(used)), span.style));
+        if !fits || more {
+            break;
+        }
+        used += width(&first);
     }
     out
 }

@@ -10,23 +10,25 @@ quitting, several clients can attach to one session, and the phone app
 [Sessh](https://github.com/lum1n/sessh-swift) sees the same sessions.
 
 ```
-┌ sessions ────────────┐┌ fix the tests  ~/proj · Claude Code ──────────────────────┐
-│local               3 ││› fix the failing tests                                   │
-│1 ⚠ fix the te… claude││                                                          │
-│2 ⚙ bump deps   codex ││∴ Looking at the test output first.                       │
-│3 · docs        pi    ││$ cargo test                                              │
-│box                 1 ││  … 12 more lines (space)                                 │
-│4 … refactor  opencode││  test result: FAILED. 3 passed; 1 failed                 │
-│                      ││± src/lib.rs edit +4 −1  space: diff                      │
-│                      ││                                                          │
-│                      ││⚠ Allow Edit src/lib.rs?                                  │
-│                      ││  1 Allow   2 Always allow   3 Deny   y approve · N deny  │
-│                      │└──────────────────────────────────────────────────────────┘
-│                      │┌ prompt ───────────────────────────────────────────────────┐
-│                      ││                                                          │
-└──────────────────────┘└──────────────────────────────────────────────────────────┘
- ⚠ approval Claude Code │ model opus  permission default │ ctx 42% $0.31 │ 5h 37%
+ ◆ chameleon › fix the tests  ~/proj · Claude Code · opus                 ⚠1 ⠋2 ·1
+────────────────────────┬───────────────────────────────────────────────────────────
+ local ─────────────── 3│ ▎ fix the failing tests
+▌1 ⚠ fix the te… claude │
+ 2 ⚙ bump deps    codex │ ∴ Looking at the test output first.
+ 3 · docs            pi │ $ cargo test
+                        │   … 12 more lines (space)
+ box ───────────────── 1│   test result: FAILED. 3 passed; 1 failed
+ 4 ⠋ refactor  opencode │ ± src/lib.rs edit +4 −1  space: diff
+                        │
+                        │ ⚠ Allow Edit src/lib.rs?
+                        │   1 Allow   2 Always allow   3 Deny   y approve · N deny
+                        ├───────────────────────────────────────────────────────────
+                        │ ❯ type to prompt · / commands
+ ⚠ approval Claude Code │ model opus · permission default │ ctx ▰▰▰▱▱▱ 42% · $0.31
 ```
+
+`b` folds the session list away so the transcript has the whole terminal; the header keeps a
+tally of every session's state (`⚠1 ⠋2 ·1`) so nothing gets lost while it's hidden.
 
 ## Build
 
@@ -46,9 +48,11 @@ Rust 1.88 or newer. The optional Lua runtime needs `--features lua`.
 |---|---|
 | `n` / `ctrl-n` | start a session: host, harness, directory, model, permission, first prompt |
 | `j` `k` `1`-`0` | pick a session; in the transcript, move between items |
+| `b` / `ctrl-b` | show or hide the session list (`h` brings it back too) |
+| `T` | colour theme: previews as you move, `enter` keeps it across restarts |
 | `enter` | attach to a session, or focus the prompt |
 | typing | starts a prompt; `enter` sends, `alt-enter` adds a line |
-| `/` | command palette: the harness's slash commands, chameleon actions, hooks |
+| `/` | command palette: the harness's slash commands, chameleon actions, hooks. Commands that take a value (`/model`, `/mode`) open a picker, dialogs (`/mcp`, `/status`) open a panel with their actions, and TUI-only ones (`/doctor`) hand the terminal to the harness |
 | `y` / `N` | approve or deny the open request (`N` opens the card with the denial selected) |
 | `o` | model, effort, mode, permission (as the harness reports them) |
 | `space` | expand or collapse the item under the cursor (reasoning, output, diffs) |
@@ -70,12 +74,14 @@ working, idle, done, exited.
 tick_ms = 250          # repaint cadence for spinners
 list_refresh_s = 20    # how often hosts are re-listed
 auto_attach = true     # follow every alive session found on a host
+show_sidebar = true    # start with the session list open (b toggles it)
+sidebar_width = 34
 default_harness = "claude-code"
 
 [[hosts]]
 name = "local"         # this machine (implied when no hosts are listed)
 
-[[hosts]]
+[[hosts]]              # this machine is always listed first, even with hosts configured
 name = "box"
 ssh = "box"            # any ssh destination; ~/.ssh/config, agents and ControlMaster apply
 ssh_args = ["-p", "2222"]
@@ -85,9 +91,11 @@ connect_timeout_s = 10
 quit = ["q", "ctrl-q"]
 new_session = "ctrl-n"
 
-[theme]                # named colours or #rrggbb
-accent = "magenta"
-permission = "red"
+[theme]
+name = "tokyo-night"   # any Sessh or Lapp theme; unset: the terminal's own colours
+background = true      # false keeps the terminal's background (transparent terminals)
+accent = "#ff00ff"     # override any role: accent permission error tool thinking done
+                       # muted user agent add remove border (named colours or #rrggbb)
 
 [[hooks]]              # run on events, for any session
 name = "notify"
@@ -100,6 +108,22 @@ key = "ctrl-o"
 command = 'cd "$CHAM_CWD" && $EDITOR'
 suspend_tui = true     # hand the terminal to the command
 ```
+
+## Themes
+
+chameleon ships the same themes as [Sessh](https://github.com/lum1n/sessh-swift) and Lapp:
+Phosphor, Kanagawa, Catppuccin, Gruvbox, Dracula, Nord, Tokyo Night, One, Solarized, Rosé Pine,
+Everforest, Ayu, Flexoki, Vesper, GitHub, Oxocarbon, Poimandres, Night Owl, Material, Paper, Ink,
+Forest, Nightfox and the rest, dark and light. Lapp's ids (`tokyonight`, `onedark`) work too.
+
+A theme copied out of Sessh's theme editor is a JSON file chameleon reads: put it (or an array
+of them) in `~/.config/chameleon/themes/*.json` and it shows up first in the picker. The theme
+picked with `T` is remembered in `~/.local/state/chameleon/theme` and wins over the config.
+
+chameleon runs `ssh` non-interactively (`BatchMode=yes`), so it can't type passwords or answer
+host-key prompts: `ssh -o BatchMode=yes box echo ok` must print `ok` from a plain shell first
+(`ssh-copy-id box`, an agent with your key, and a `ControlMaster auto` entry in `~/.ssh/config`
+all help). When a host fails, the reason is shown under its name in the sidebar.
 
 Hooks run `sh -c command` on this machine with the session as JSON on stdin (`host`, `spec`,
 `state`, `usage`, `quota`, `permissions`, `selected_item`) and as `CHAM_HOST`, `CHAM_SESSION_ID`,

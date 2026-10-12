@@ -90,7 +90,7 @@ fn main() {
         eprintln!("  {:?} {:?} {} chars", i.kind, i.status, i.text.len());
     }
     let screen = app.screen();
-    println!("{}", screen.transcript.title.text());
+    println!("{}", screen.header.text());
     println!("{}", "─".repeat(width as usize));
     for l in &screen.transcript.lines {
         println!("{}", l.text());

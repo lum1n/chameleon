@@ -4,11 +4,14 @@ use acc_core::state::BlockKind;
 
 use crate::keymap::Action;
 use crate::model::App;
-use crate::overlay::{ConfirmAction, Overlay, Wizard, file_changes, option_label};
+use crate::overlay::{
+    ConfirmAction, Overlay, Wizard, file_changes, option_label, panel_actions, permission_modes,
+};
 use crate::style::{Line, Span, Style};
-use crate::view::transcript::{file_head, hunks};
+use crate::view::spinner;
+use crate::view::transcript::{file_head, hunks, option_tone, request_preview};
 use crate::view::{OverlayView, Rect};
-use crate::wrap::{fit, truncate, wrap_line};
+use crate::wrap::{fit, truncate, wrap_hang, wrap_line};
 
 fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.w);
@@ -87,6 +90,7 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
                 lines,
                 footer: Some(Line::styled("j/k scroll · esc close", muted)),
                 cursor: None,
+                tone: None,
             }
         }
         Overlay::Confirm { action, title, .. } => {
@@ -101,6 +105,7 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
                 lines: vec![Line::raw(format!("{what} \"{}\"?", truncate(title, 30)))],
                 footer: Some(Line::styled("y / enter: yes · anything else: no", muted)),
                 cursor: None,
+                tone: None,
             }
         }
         Overlay::Permission {
@@ -108,122 +113,8 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
             request_id,
             selected,
             text,
-        } => {
-            let rect = centered(area, 72, area.h.saturating_sub(4).max(8));
-            let inner = rect.inner();
-            let w = inner.w as usize;
-            let slot = app.slots.iter().find(|s| &s.key == key);
-            let perm = slot
-                .and_then(|s| s.session.as_ref())
-                .and_then(|s| s.permissions().iter().find(|p| &p.request_id == request_id));
-            let mut lines = Vec::new();
-            let Some(p) = perm else {
-                return Some(OverlayView {
-                    rect,
-                    title: "request".into(),
-                    lines: vec![Line::styled("already answered", muted)],
-                    footer: Some(Line::styled("esc", muted)),
-                    cursor: None,
-                });
-            };
-            let question = p.kind == BlockKind::Question;
-            lines.extend(wrap_line(
-                &Line::styled(p.title.clone(), Style::new().bold()),
-                w,
-                "  ",
-            ));
-            // Preview of what is being asked for.
-            let mut preview: Vec<Line> = Vec::new();
-            if let (Some(s), Some(id)) = (slot.and_then(|s| s.session.as_ref()), &p.item_id)
-                && let Some(item) = s.transcript().get(id)
-            {
-                let d = item.detail(s.spec().harness);
-                match &d {
-                    acc_core::item::ItemDetail::Command { command, cwd, .. } => {
-                        preview.push(Line::new(vec![
-                            Span::new("$ ", Style::new().fg(theme.tool).bold()),
-                            Span::new(command.clone(), Style::new().fg(theme.tool)),
-                        ]));
-                        if let Some(c) = cwd {
-                            preview.push(Line::styled(format!("in {c}"), muted));
-                        }
-                    }
-                    acc_core::item::ItemDetail::FileChange { files } => {
-                        for f in files {
-                            preview.push(file_head(f, &theme));
-                            preview.extend(hunks(f, &theme));
-                        }
-                    }
-                    acc_core::item::ItemDetail::Tool {
-                        name, title, input, ..
-                    } => {
-                        preview.push(Line::new(vec![
-                            Span::new(format!("⚙ {name} "), Style::new().fg(theme.tool).bold()),
-                            Span::new(title.clone(), Style::new().fg(theme.tool)),
-                        ]));
-                        preview.extend(json_lines(input, muted));
-                    }
-                    acc_core::item::ItemDetail::Text => {}
-                }
-            }
-            if preview.is_empty() && !p.input.is_null() {
-                preview.extend(json_lines(&p.input, muted));
-            }
-            if !preview.is_empty() {
-                lines.push(Line::default());
-                let room = (inner.h as usize).saturating_sub(lines.len() + p.options.len() + 5);
-                let n = preview.len();
-                for l in preview.iter().take(room) {
-                    lines.extend(wrap_line(l, w, "    ").into_iter().take(1));
-                }
-                if n > room {
-                    lines.push(Line::styled(format!("… {} more lines", n - room), muted));
-                }
-            }
-            lines.push(Line::default());
-            for (i, o) in p.options.iter().enumerate() {
-                let style = if i == *selected && text.is_empty() {
-                    Style::new().fg(theme.accent).bold().reversed()
-                } else {
-                    Style::new()
-                };
-                lines.push(Line::new(vec![
-                    Span::new(format!(" {} ", i + 1), muted),
-                    Span::new(format!(" {} ", o.label), style),
-                ]));
-            }
-            let mut cursor = None;
-            if question {
-                lines.push(Line::default());
-                let prompt = "answer: ";
-                let shown = truncate(text, w.saturating_sub(prompt.len() + 1));
-                lines.push(Line::new(vec![
-                    Span::new(prompt, accent),
-                    Span::raw(shown.clone()),
-                ]));
-                cursor = Some((
-                    inner.x + (prompt.len() + crate::wrap::width(&shown)) as u16,
-                    inner.y + (lines.len() as u16).saturating_sub(1),
-                ));
-            }
-            let footer = if question {
-                "enter: answer · 1-9: pick · esc: later"
-            } else {
-                "y / 1: allow · n: deny · 1-9: pick · enter: selected · esc: later"
-            };
-            let lines = lines.into_iter().take(inner.h as usize).collect();
-            OverlayView {
-                rect,
-                title: if question {
-                    "question".into()
-                } else {
-                    "approval".into()
-                },
-                lines,
-                footer: Some(Line::styled(footer, muted)),
-                cursor,
-            }
-        }
+        } => permission_view(app, key, request_id, *selected, text, area),
+        Overlay::Themes { selected, .. } => themes_view(app, *selected, area),
         Overlay::Launch(w) => launch_view(app, w, area),
         Overlay::Palette { query, selected } => {
             let rect = centered(area, 72, area.h.saturating_sub(4).clamp(6, 24));
@@ -269,6 +160,7 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
                     muted,
                 )),
                 cursor,
+                tone: None,
             }
         }
         Overlay::Options { key, row, pending } => {
@@ -326,8 +218,67 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
                 lines,
                 footer: Some(Line::styled("←/→ change · enter: apply · esc: cancel", muted)),
                 cursor: None,
+                tone: None,
             }
         }
+        Overlay::Pick {
+            command,
+            choices,
+            current,
+            selected,
+            ..
+        } => {
+            let rect = centered(
+                area,
+                64,
+                (choices.len() as u16 + 4).clamp(6, area.h.saturating_sub(4).max(6)),
+            );
+            let inner = rect.inner();
+            let w = inner.w as usize;
+            let room = inner.h as usize;
+            let start = selected.saturating_sub(room.saturating_sub(1));
+            let mut lines = Vec::new();
+            for (i, c) in choices.iter().enumerate().skip(start).take(room) {
+                let style = if i == *selected {
+                    Style::new().reversed()
+                } else {
+                    Style::new()
+                };
+                let mark = if current.as_ref() == Some(&c.value) {
+                    "● "
+                } else {
+                    "  "
+                };
+                let label_w = 28.min(w / 2);
+                let hint = c.description.clone().unwrap_or_default();
+                lines.push(Line::new(vec![
+                    Span::new(mark, style.fg(theme.accent)),
+                    Span::new(fit(&c.label, label_w), style.bold()),
+                    Span::new(" ", style),
+                    Span::new(
+                        fit(
+                            &truncate(&hint, w.saturating_sub(label_w + 3)),
+                            w.saturating_sub(label_w + 3),
+                        ),
+                        style.fg(theme.muted),
+                    ),
+                ]));
+            }
+            OverlayView {
+                rect,
+                title: format!("/{command}"),
+                lines,
+                footer: Some(Line::styled("↑/↓ choose · enter: set · esc: cancel", muted)),
+                cursor: None,
+                tone: None,
+            }
+        }
+        Overlay::Panel {
+            key,
+            id,
+            selected,
+            input,
+        } => panel_view(app, key, id, *selected, input.as_deref(), area),
         Overlay::Diff { key, item, scroll } => {
             let rect = centered(area, area.w.saturating_sub(4), area.h.saturating_sub(2));
             let inner = rect.inner();
@@ -364,38 +315,406 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
                     muted,
                 )),
                 cursor: None,
+                tone: None,
             }
         }
     })
 }
 
-fn json_lines(v: &serde_json::Value, style: Style) -> Vec<Line> {
-    let text = match v {
-        serde_json::Value::Object(m) => m
-            .iter()
-            .map(|(k, v)| {
-                let v = match v {
-                    serde_json::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                format!("{k}: {v}")
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        serde_json::Value::Null => String::new(),
-        other => other.to_string(),
-    };
-    text.lines().map(|l| Line::styled(l.to_owned(), style)).collect()
-}
-
-fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
+fn panel_view(
+    app: &App,
+    key: &crate::slot::SessionKey,
+    id: &str,
+    selected: usize,
+    input: Option<&str>,
+    area: Rect,
+) -> OverlayView {
     let theme = app.theme;
     let muted = Style::new().fg(theme.muted);
     let accent = Style::new().fg(theme.accent);
-    let rect = centered(area, 70, 16);
+    let rect = centered(area, 80, area.h.saturating_sub(4).max(8));
     let inner = rect.inner();
-    let width = inner.w as usize;
+    let w = inner.w as usize;
+    let Some(panel) = app
+        .slots
+        .iter()
+        .find(|s| &s.key == key)
+        .and_then(|s| s.panels.get(id))
+    else {
+        return OverlayView {
+            rect,
+            title: format!("/{id}"),
+            lines: vec![Line::styled("waiting for the harness…", muted)],
+            footer: Some(Line::styled("esc: close", muted)),
+            cursor: None,
+            tone: None,
+        };
+    };
+    let chosen = panel_actions(panel).get(selected).map(|a| (*a).clone());
+    let mut lines: Vec<Line> = Vec::new();
+    let mut focus_line = 0;
+    let mut n = 0;
+    // One row of buttons; numbering follows `panel_actions`.
+    let mut buttons = |actions: &[acc_core::event::PanelAction], lines: &mut Vec<Line>, indent: &str| {
+        if actions.is_empty() {
+            return;
+        }
+        let mut l = Line::new(vec![Span::raw(indent.to_owned())]);
+        for a in actions {
+            let mut style = if a.destructive {
+                Style::new().fg(theme.error)
+            } else {
+                accent
+            };
+            if n == selected {
+                style = style.bold().reversed();
+                focus_line = lines.len();
+            }
+            l.push(Span::new(format!("[{}]", a.label), style));
+            l.push(Span::raw(" "));
+            n += 1;
+        }
+        lines.push(l);
+    };
+    for (si, section) in panel.sections.iter().enumerate() {
+        if si > 0 {
+            lines.push(Line::default());
+        }
+        if let Some(t) = &section.title {
+            lines.push(Line::styled(t.clone(), accent.bold()));
+        }
+        if section.rows.is_empty() && section.actions.is_empty() {
+            lines.push(Line::styled("  (nothing)", muted));
+        }
+        for row in &section.rows {
+            let value = row.value.clone().unwrap_or_default();
+            let label_w = w.saturating_sub(crate::wrap::width(&value) + 3).max(8);
+            lines.push(Line::new(vec![
+                Span::raw("  "),
+                Span::new(fit(&truncate(&row.label, label_w), label_w), Style::new()),
+                Span::raw(" "),
+                Span::new(value, Style::new().bold()),
+            ]));
+            if let Some(d) = row.detail.as_deref().filter(|d| !d.is_empty()) {
+                lines.push(Line::styled(
+                    format!("    {}", truncate(d, w.saturating_sub(4))),
+                    muted,
+                ));
+            }
+            buttons(&row.actions, &mut lines, "    ");
+        }
+        buttons(&section.actions, &mut lines, "  ");
+    }
+    let mut cursor = None;
+    if let (Some(text), Some(a)) = (input, &chosen) {
+        lines.push(Line::default());
+        let prompt = format!("{}: ", a.prompt.clone().unwrap_or_else(|| a.label.clone()));
+        let shown = truncate(text, w.saturating_sub(prompt.len() + 1));
+        focus_line = lines.len();
+        lines.push(Line::new(vec![
+            Span::new(prompt.clone(), accent),
+            Span::raw(shown.clone()),
+        ]));
+        cursor = Some((
+            inner.x + crate::wrap::width(&prompt) as u16 + crate::wrap::width(&shown) as u16,
+            0,
+        ));
+    }
+    let room = inner.h as usize;
+    let start = focus_line.saturating_sub(room.saturating_sub(1));
+    if let Some((x, _)) = cursor {
+        cursor = Some((x, inner.y + (focus_line - start) as u16));
+    }
+    let footer = if input.is_some() {
+        "enter: run · esc: back".to_owned()
+    } else if n == 0 {
+        "esc: close".to_owned()
+    } else {
+        "↑/↓ choose · enter: run · esc: close".to_owned()
+    };
+    OverlayView {
+        rect,
+        title: if panel.title.is_empty() {
+            format!("/{id}")
+        } else {
+            panel.title.clone()
+        },
+        lines: lines.into_iter().skip(start).take(room).collect(),
+        footer: Some(Line::styled(footer, muted)),
+        cursor,
+        tone: None,
+    }
+}
+
+/// Two columns of air inside an overlay's border.
+const PAD: &str = "  ";
+
+/// Shrinks `max` (vertically centred) to `lines` and a row of air, and
+/// makes a content-relative cursor absolute.
+fn fit_content(
+    max: Rect,
+    mut lines: Vec<Line>,
+    cursor: Option<(u16, u16)>,
+) -> (Rect, Vec<Line>, Option<(u16, u16)>) {
+    lines.push(Line::default());
+    let h = (lines.len() as u16 + 2).min(max.h);
+    let rect = Rect::new(max.x, max.y + (max.h - h) / 2, max.w, h);
+    let inner = rect.inner();
+    lines.truncate(inner.h as usize);
+    let cursor = cursor
+        .filter(|(_, y)| *y < inner.h)
+        .map(|(x, y)| (inner.x + x, inner.y + y));
+    (rect, lines, cursor)
+}
+
+fn padded(mut l: Line) -> Line {
+    l.spans.insert(0, Span::raw(PAD));
+    l
+}
+
+/// The approval / question card.
+///
+/// ```text
+/// ╭ approval ──────────────────────────────────────────╮
+/// │                                                    │
+/// │  Claude Code · fix the tests                       │
+/// │  Bash wants to run a command                       │
+/// │                                                    │
+/// │  ▎ $ cargo test --workspace                        │
+/// │                                                    │
+/// │  ❯ 1  Allow                                        │
+/// │    2  Always allow                                 │
+/// │    3  Deny                                         │
+/// ╰──────── y allow · n deny · 1-9 pick · esc later ───╯
+/// ```
+fn permission_view(
+    app: &App,
+    key: &crate::slot::SessionKey,
+    request_id: &str,
+    selected: usize,
+    text: &str,
+    area: Rect,
+) -> OverlayView {
+    let theme = app.theme;
+    let muted = Style::new().fg(theme.muted);
+    let tone = theme.permission;
+    // The most it may take; it shrinks to its content below.
+    let rect = centered(area, 76, area.h.saturating_sub(4).max(10));
+    let inner = rect.inner();
+    let w = (inner.w as usize).saturating_sub(2 * PAD.len()).max(8);
+    let slot = app.slots.iter().find(|s| &s.key == key);
+    let session = slot.and_then(|s| s.session.as_ref());
+    let Some((session, p)) = session.and_then(|s| {
+        s.permissions()
+            .iter()
+            .find(|p| p.request_id == request_id)
+            .map(|p| (s, p))
+    }) else {
+        return OverlayView {
+            rect,
+            title: "request".into(),
+            lines: vec![Line::default(), padded(Line::styled("already answered", muted))],
+            footer: Some(Line::styled("esc", muted)),
+            cursor: None,
+            tone: Some(tone),
+        };
+    };
+    let question = p.kind == BlockKind::Question;
+    let mut lines = vec![Line::default()];
+    if let Some(s) = slot {
+        lines.push(padded(Line::styled(
+            truncate(&format!("{} · {}", s.harness().display_name(), s.title()), w),
+            muted,
+        )));
+    }
+    for l in wrap_line(&Line::styled(p.title.clone(), Style::new().bold()), w, "") {
+        lines.push(padded(l));
+    }
+    // The preview gets what the options and the answer box leave.
+    let reserved = p.options.len() + if question { 5 } else { 0 } + 3;
+    let preview = request_preview(session, p, &theme, w.saturating_sub(2));
+    if !preview.is_empty() {
+        lines.push(Line::default());
+        let room = (inner.h as usize).saturating_sub(lines.len() + reserved).max(1);
+        let bar = Span::new("▎ ", Style::new().fg(tone));
+        let n = preview.len();
+        for mut l in preview.into_iter().take(if n > room { room - 1 } else { room }) {
+            l.spans.insert(0, bar.clone());
+            lines.push(padded(l));
+        }
+        if n > room {
+            lines.push(padded(Line::styled(
+                format!("… {} more lines", n - room + 1),
+                muted,
+            )));
+        }
+    }
+    lines.push(Line::default());
+    for (i, o) in p.options.iter().enumerate() {
+        let ot = option_tone(&o.id, &o.label, &theme);
+        let chosen = i == selected && text.is_empty();
+        let label = if chosen {
+            Style::new().fg(ot).bold()
+        } else {
+            Style::new()
+        };
+        lines.push(padded(Line::new(vec![
+            Span::new(if chosen { "❯ " } else { "  " }, Style::new().fg(ot).bold()),
+            Span::new(format!("{}  ", i + 1), muted),
+            Span::new(o.label.clone(), label),
+        ])));
+    }
+    let mut cursor = None;
+    if question {
+        lines.push(Line::default());
+        lines.push(padded(Line::styled("or type an answer", muted)));
+        let box_w = w.saturating_sub(4);
+        let shown = tail(text, box_w);
+        let edge = Style::new().fg(if text.is_empty() {
+            theme.border
+        } else {
+            theme.accent
+        });
+        lines.push(padded(Line::styled(format!("╭{}╮", "─".repeat(box_w + 2)), edge)));
+        cursor = Some((
+            PAD.len() as u16 + 2 + crate::wrap::width(&shown) as u16,
+            lines.len() as u16,
+        ));
+        lines.push(padded(Line::new(vec![
+            Span::new("│ ", edge),
+            Span::raw(fit(&shown, box_w)),
+            Span::new(" │", edge),
+        ])));
+        lines.push(padded(Line::styled(format!("╰{}╯", "─".repeat(box_w + 2)), edge)));
+    }
+    let footer = if question {
+        "enter answer · 1-9 pick · esc later"
+    } else {
+        "y allow · n deny · 1-9 pick · enter selected · esc later"
+    };
+    let (rect, lines, cursor) = fit_content(rect, lines, cursor);
+    OverlayView {
+        rect,
+        title: if question {
+            "question".into()
+        } else {
+            "approval".into()
+        },
+        lines,
+        footer: Some(Line::styled(footer, muted)),
+        cursor,
+        tone: Some(tone),
+    }
+}
+
+/// The theme picker: every theme with a strip of its colours.
+fn themes_view(app: &App, selected: usize, area: Rect) -> OverlayView {
+    let theme = app.theme;
+    let muted = Style::new().fg(theme.muted);
+    let rect = centered(area, 60, area.h.saturating_sub(4).clamp(8, 32));
+    let inner = rect.inner();
+    let custom = app.cfg.custom_themes.len();
+    let mut entries: Vec<(&str, String, crate::config::Theme)> =
+        vec![("", "terminal colours".to_owned(), crate::config::Theme::default())];
+    let choices = app.theme_choices();
+    for (i, t) in choices.iter().enumerate() {
+        let section = if i < custom {
+            "custom"
+        } else if t.is_light() {
+            "light"
+        } else {
+            "dark"
+        };
+        entries.push((section, t.name.clone(), t.resolve()));
+    }
     let mut lines = Vec::new();
+    let mut focus = 0;
+    let mut section = "";
+    for (i, (sec, name, t)) in entries.iter().enumerate() {
+        if *sec != section {
+            section = sec;
+            lines.push(Line::default());
+            lines.push(padded(Line::styled(*sec, muted.bold())));
+        }
+        let chosen = i == selected;
+        if chosen {
+            focus = lines.len();
+        }
+        let mut l = padded(Line::new(vec![
+            Span::new(
+                if chosen { "❯ " } else { "  " },
+                Style::new().fg(theme.accent).bold(),
+            ),
+            Span::new(
+                fit(name, 26),
+                if chosen {
+                    Style::new().fg(theme.accent).bold()
+                } else {
+                    Style::new()
+                },
+            ),
+        ]));
+        for c in [
+            t.bg,
+            t.surface,
+            t.accent,
+            t.user,
+            t.tool,
+            t.done,
+            t.permission,
+            t.error,
+        ] {
+            l.push(if c == crate::style::Color::Reset {
+                Span::new("··", muted)
+            } else {
+                Span::new("██", Style::new().fg(c))
+            });
+        }
+        lines.push(l);
+    }
+    let room = inner.h as usize;
+    let start = focus
+        .saturating_sub(room / 2)
+        .min(lines.len().saturating_sub(room));
+    OverlayView {
+        rect,
+        title: "theme".into(),
+        lines: lines.into_iter().skip(start).take(room).collect(),
+        footer: Some(Line::styled("↑/↓ preview · enter keep · esc revert", muted)),
+        cursor: None,
+        tone: None,
+    }
+}
+
+/// The launch wizard.
+///
+/// ```text
+/// ╭ new session ───────────────────────────────────────────────╮
+/// │                                                            │
+/// │    host          local   box                               │
+/// │    harness       Claude Code   Codex   pi   opencode       │
+/// │                                                            │
+/// │  ❯ directory     ~/repos/chameleon                         │
+/// │    model         the harness's default                     │
+/// │    permission    default                                   │
+/// │                                                            │
+/// │    first prompt                                            │
+/// │    ┃ fix the failing tests                                 │
+/// │                                                            │
+/// │    ⏵ starts Claude Code on local, detached                 │
+/// ╰──────────── tab next · ←/→ choose · ctrl-enter start · esc ╯
+/// ```
+fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
+    const LABEL: usize = 14;
+    let theme = app.theme;
+    let muted = Style::new().fg(theme.muted);
+    let accent = Style::new().fg(theme.accent);
+    // The most it may take; it shrinks to its content below.
+    let rect = centered(area, 76, area.h.saturating_sub(2));
+    let inner = rect.inner();
+    let width = (inner.w as usize).saturating_sub(PAD.len()).max(LABEL + 8);
+    let value_w = width.saturating_sub(2 + LABEL + 1);
+    let mut lines = vec![Line::default()];
     let mut cursor = None;
     let host = app
         .hosts
@@ -404,111 +723,178 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
         .unwrap_or_default();
     let harnesses = app.wizard_harnesses(w.host);
     let probed = app.hosts.get(w.host).is_some_and(|h| h.probed);
-    let label = |i: usize, name: &str| -> Span {
-        if w.field == i {
-            Span::new(fit(name, 13), accent.bold())
+
+    let label = |field: usize, name: &str| -> Vec<Span> {
+        if w.field == field {
+            vec![
+                Span::new("❯ ", accent.bold()),
+                Span::new(fit(name, LABEL), accent.bold()),
+            ]
         } else {
-            Span::new(fit(name, 13), muted)
+            vec![Span::raw("  "), Span::new(fit(name, LABEL), muted)]
         }
     };
-    let mut hl = Line::new(vec![label(0, "host")]);
-    for (i, h) in app.hosts.iter().enumerate() {
-        let s = if i == w.host {
-            Style::new().reversed()
-        } else {
-            Style::new()
+    // A choice; the chosen one is a pill while its row has focus.
+    let chip = |text: &str, chosen: bool, focused: bool| -> Span {
+        let text = format!(" {} ", text.replace(' ', "\u{a0}"));
+        let style = match (chosen, focused) {
+            (true, true) => accent.bold().reversed(),
+            (true, false) => accent.bold(),
+            _ => muted,
         };
-        hl.push(Span::new(format!(" {} ", h.cfg.name), s));
-        hl.push(Span::raw(" "));
-    }
-    lines.push(hl);
-    let mut hal = Line::new(vec![label(1, "harness")]);
-    for h in &harnesses {
-        let s = if *h == w.harness {
-            Style::new().reversed()
-        } else {
-            Style::new()
-        };
-        hal.push(Span::new(format!(" {} ", h.display_name()), s));
-        hal.push(Span::raw(" "));
-    }
-    lines.push(hal);
+        Span::new(text, style)
+    };
+    let hang = Line::raw(" ".repeat(PAD.len() + 2 + LABEL));
+    let choices = |field: usize, name: &str, items: Vec<(String, bool)>| -> Vec<Line> {
+        let mut l = padded(Line::new(label(field, name)));
+        for (text, chosen) in items {
+            l.push(chip(&text, chosen, w.field == field));
+            l.push(Span::raw(" "));
+        }
+        wrap_hang(&l, width + PAD.len(), &hang)
+    };
+
+    lines.extend(choices(
+        0,
+        "host",
+        app.hosts
+            .iter()
+            .enumerate()
+            .map(|(i, h)| (h.cfg.name.clone(), i == w.host))
+            .collect(),
+    ));
+    lines.extend(choices(
+        1,
+        "harness",
+        harnesses
+            .iter()
+            .map(|h| (h.display_name().to_owned(), *h == w.harness))
+            .collect(),
+    ));
+    let note = |text: &str, style: Style| {
+        padded(Line::new(vec![
+            Span::raw(" ".repeat(2 + LABEL + 1)),
+            Span::new(text.to_owned(), style),
+        ]))
+    };
     if !probed {
-        lines.push(Line::new(vec![
-            Span::new(fit("", 13), muted),
-            Span::new("probing the host for harnesses…", muted),
-        ]));
-    } else if harnesses.len() == Harness_ALL_LEN
-        && app.hosts.get(w.host).is_some_and(|h| h.harnesses.is_empty())
-    {
-        lines.push(Line::new(vec![
-            Span::new(fit("", 13), muted),
-            Span::new(
-                "no harness found on the host's PATH",
-                Style::new().fg(theme.error),
-            ),
-        ]));
-    } else {
-        lines.push(Line::default());
+        lines.push(note(
+            &format!("{} looking for harnesses on {host}…", spinner(app.now_ms)),
+            muted.italic(),
+        ));
+    } else if app.hosts.get(w.host).is_some_and(|h| h.harnesses.is_empty()) {
+        lines.push(note(
+            "no harness found on the host's PATH",
+            Style::new().fg(theme.error),
+        ));
     }
-    let names = ["directory", "model", "permission", "first prompt"];
-    let hints = [
-        "where the agent works (~ allowed)",
-        "blank: the harness's default",
-        "claude: default|acceptEdits|plan|bypassPermissions · codex: profile",
-        "optional; alt-enter for a new line",
+    lines.push(Line::default());
+
+    let names = ["directory", "model", "permission"];
+    let placeholders = [
+        "~ is the home directory",
+        "the harness's default",
+        "the harness's default",
     ];
     for (i, name) in names.iter().enumerate() {
         let field = i + 2;
+        let focused = w.field == field;
         let value = &w.fields[i];
-        let shown_w = width.saturating_sub(14);
-        let shown = tail(value, shown_w);
-        let mut l = Line::new(vec![label(field, name)]);
-        if value.is_empty() && w.field != field {
-            l.push(Span::new(hints[i], muted.italic()));
+        let shown = tail(value, value_w);
+        let mut l = padded(Line::new(label(field, name)));
+        if value.is_empty() && !focused {
+            l.push(Span::new(placeholders[i], muted.italic()));
         } else {
-            l.push(Span::new(shown.clone(), Style::new()));
+            l.push(Span::raw(shown.clone()));
         }
-        if w.field == field {
+        if focused {
             cursor = Some((
-                inner.x + 12 + crate::wrap::width(&shown) as u16,
-                inner.y + lines.len() as u16,
+                (PAD.len() + 2 + LABEL + crate::wrap::width(&shown)) as u16,
+                lines.len() as u16,
             ));
         }
         lines.push(l);
-        if w.field == field && !value.is_empty() {
-            lines.push(Line::new(vec![
-                Span::new(fit("", 13), muted),
-                Span::new(hints[i], muted.italic()),
-            ]));
+        let modes = permission_modes(w.harness);
+        if field == 4 && focused && !modes.is_empty() {
+            let mut m = padded(Line::raw(" ".repeat(2 + LABEL)));
+            for mode in modes {
+                m.push(chip(mode, value == mode, false));
+                m.push(Span::raw(" "));
+            }
+            m.push(Span::new(" ←/→", muted));
+            lines.extend(wrap_hang(&m, width + PAD.len(), &hang));
         }
     }
     lines.push(Line::default());
-    if let Some(e) = &w.error {
-        lines.push(Line::styled(e.clone(), Style::new().fg(theme.error)));
-    } else if w.busy {
-        lines.push(Line::styled("checking the directory…", muted));
+
+    // The first prompt: a few wrapped lines behind a bar.
+    let focused = w.field == 5;
+    lines.push(padded(Line::new(label(5, "first prompt"))));
+    let bar = Span::new(
+        "┃ ",
+        Style::new().fg(if focused { theme.accent } else { theme.border }),
+    );
+    let text_w = width.saturating_sub(4).max(8);
+    let prompt = &w.fields[3];
+    let mut rows = if prompt.is_empty() {
+        vec![Line::default()]
     } else {
-        lines.push(Line::styled(
-            format!(
-                "starts {} on {host}, detached; it keeps running if chameleon quits",
-                w.harness.display_name()
-            ),
-            muted,
-        ));
+        wrap_line(&Line::raw(prompt.clone()), text_w, "")
+    };
+    if prompt.ends_with('\n') {
+        rows.push(Line::default());
     }
-    let footer = "tab/↓: next · ←/→: choose · enter on the prompt or ctrl-enter: start · esc: cancel";
+    let rows: Vec<Line> = rows.split_off(rows.len().saturating_sub(4));
+    let last = rows.len() - 1;
+    for (r, row) in rows.into_iter().enumerate() {
+        let mut l = padded(Line::new(vec![Span::raw("  "), bar.clone()]));
+        if prompt.is_empty() {
+            l.push(Span::new("optional · alt-enter adds a line", muted.italic()));
+        } else {
+            if focused && r == last {
+                cursor = Some(((PAD.len() + 4 + row.width()) as u16, lines.len() as u16));
+            }
+            l.spans.extend(row.spans);
+        }
+        if focused && prompt.is_empty() {
+            cursor = Some(((PAD.len() + 4) as u16, lines.len() as u16));
+        }
+        lines.push(l);
+    }
+    lines.push(Line::default());
+
+    let status = if let Some(e) = &w.error {
+        Line::styled(format!("✖ {e}"), Style::new().fg(theme.error))
+    } else if w.busy {
+        Line::styled(format!("{} checking the directory…", spinner(app.now_ms)), muted)
+    } else {
+        Line::new(vec![
+            Span::new("⏵ ", accent),
+            Span::new(
+                format!(
+                    "starts {} on {host}, detached; it keeps running if chameleon quits",
+                    w.harness.display_name()
+                ),
+                muted,
+            ),
+        ])
+    };
+    lines.extend(wrap_hang(
+        &padded(status),
+        width,
+        &Line::raw(PAD.to_owned() + "  "),
+    ));
+    let footer = "tab next · ←/→ choose · ctrl-enter start · esc cancel";
+    let (rect, lines, cursor) = fit_content(rect, lines, cursor);
     OverlayView {
         rect,
         title: "new session".into(),
-        lines: lines.into_iter().take(inner.h as usize).collect(),
+        lines,
         footer: Some(Line::styled(footer, muted)),
         cursor,
+        tone: None,
     }
 }
-
-#[allow(non_upper_case_globals)]
-const Harness_ALL_LEN: usize = acc_core::Harness::ALL.len();
 
 /// The last `max` columns of a single-line value.
 fn tail(s: &str, max: usize) -> String {

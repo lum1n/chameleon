@@ -69,11 +69,61 @@ fn load_config(path: Option<PathBuf>) -> Result<Config, String> {
     let Some(path) = path.or_else(Config::default_path) else {
         return Ok(Config::default());
     };
-    match std::fs::read_to_string(&path) {
-        Ok(text) => Config::parse(&text).map_err(|e| format!("{}: {e}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !explicit => Ok(Config::default()),
-        Err(e) => Err(format!("{}: {e}", path.display())),
+    let mut cfg = match std::fs::read_to_string(&path) {
+        Ok(text) => Config::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !explicit => Config::default(),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    if let Some(dir) = path.parent() {
+        load_themes(&dir.join("themes"), &mut cfg);
     }
+    // The theme last picked in the app wins over the config's.
+    if let Some(saved) = state_path("theme").and_then(|p| std::fs::read_to_string(p).ok()) {
+        let saved = saved.trim();
+        cfg.theme.name = (!saved.is_empty()).then(|| saved.to_owned());
+    }
+    Ok(cfg)
+}
+
+/// Custom themes: `*.json` in Sessh's theme schema.
+fn load_themes(dir: &std::path::Path, cfg: &mut Config) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .collect();
+    paths.sort();
+    for p in paths {
+        let parsed = std::fs::read_to_string(&p)
+            .map_err(|e| e.to_string())
+            .and_then(|t| chameleon_app::themes::parse(&t));
+        match parsed {
+            Ok(themes) => cfg.custom_themes.extend(themes),
+            Err(e) => cfg.problems.push(format!("{}: {e}", p.display())),
+        }
+    }
+}
+
+/// `$XDG_STATE_HOME/chameleon/<name>` or `~/.local/state/chameleon/<name>`.
+pub fn state_path(name: &str) -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))?;
+    Some(base.join("chameleon").join(name))
+}
+
+/// Remembers the theme picked in the app (empty: the terminal's colours).
+pub fn save_theme(name: Option<&str>) -> std::io::Result<()> {
+    let Some(path) = state_path("theme") else {
+        return Ok(());
+    };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, name.unwrap_or_default())
 }
 
 fn hostname() -> String {

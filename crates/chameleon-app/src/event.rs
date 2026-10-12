@@ -132,5 +132,15 @@ pub enum Effect {
         env: Vec<(String, String)>,
         suspend_tui: bool,
     },
+    /// Hand the terminal to a local program until it exits (a harness's
+    /// own TUI, for commands only it can run).
+    Terminal {
+        argv: Vec<String>,
+    },
+    /// Remember the picked theme for the next start (`None`: the
+    /// terminal's colours).
+    SaveTheme {
+        name: Option<String>,
+    },
     Quit,
 }

@@ -4,8 +4,11 @@
 
 use acc_core::command::Command;
 use acc_core::detached::{FeedEntry, FeedPath, Status, parse_list};
+use acc_core::driver::DriverError;
 use acc_core::event::Event;
-use acc_core::session::{LaunchRequest, Outbound, Session, SessionSpec, Update, new_session_id};
+use acc_core::session::{
+    LaunchRequest, Outbound, Session, SessionError, SessionSpec, Update, new_session_id,
+};
 use acc_core::state::{BlockKind, RunState};
 use acc_core::{Exec, Harness};
 
@@ -76,6 +79,10 @@ impl App {
             self.toast("the session isn't attached", false);
             return Vec::new();
         };
+        let invoked = match &cmd {
+            Command::Invoke { name, .. } => Some(name.clone()),
+            _ => None,
+        };
         match session.command(cmd) {
             Ok(Outbound::Send(bytes)) => {
                 let mut out = Vec::new();
@@ -98,6 +105,13 @@ impl App {
                     false,
                 );
                 self.launch(&host, req)
+            }
+            Err(SessionError::Driver(DriverError::MissingArgument(what))) => {
+                match invoked.and_then(|name| self.picker(key, &name)) {
+                    Some(picker) => self.overlay = Some(picker),
+                    None => self.toast(format!("this command needs {what}"), true),
+                }
+                Vec::new()
             }
             Err(e) => {
                 self.toast(e.to_string(), true);
@@ -184,11 +198,7 @@ impl App {
                             h.probed = true;
                         }
                     }
-                    Err(e) => {
-                        if let Some(h) = self.host_mut(host) {
-                            h.error = Some(e);
-                        }
-                    }
+                    Err(e) => self.host_error(host, Some(e)),
                 }
                 Vec::new()
             }
@@ -353,11 +363,11 @@ impl App {
         h.listed_at_ms = Some(now);
         let text = match outcome {
             Ok(o) => {
-                h.error = None;
+                self.host_error(host, None);
                 o.stdout_text()
             }
             Err(e) => {
-                h.error = Some(e);
+                self.host_error(host, Some(e));
                 return Vec::new();
             }
         };
@@ -454,6 +464,7 @@ impl App {
         let selected = self.selected.as_ref() == Some(&self.slots[i].key);
         let mut events = Vec::new();
         let mut notices = Vec::new();
+        let mut panels = Vec::new();
         {
             let slot = &mut self.slots[i];
             for u in &updates {
@@ -487,12 +498,20 @@ impl App {
                         events.push(HookEvent::Notice);
                         notices.push(message.clone());
                     }
+                    Event::Panel(panel) => {
+                        slot.panels.insert(panel.id.clone(), panel.clone());
+                        panels.push(panel.id.clone());
+                    }
                     _ => {}
                 }
             }
         }
         for n in notices {
             self.toast(n, false);
+        }
+        let key = self.slots[i].key.clone();
+        for id in panels {
+            self.show_panel(&key, &id);
         }
         let mut out = Vec::new();
         events.dedup();
