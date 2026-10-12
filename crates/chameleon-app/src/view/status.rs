@@ -12,6 +12,9 @@ use crate::wrap::{truncate, width};
 
 /// Cells in the context meter.
 const METER_W: u64 = 6;
+/// Width of the longest state word ("attaching", "replaying"), so the
+/// rest of the bar doesn't move when the state changes.
+const STATE_W: usize = 9;
 
 pub fn build(app: &App, w: usize) -> Line {
     let t = app.theme;
@@ -33,7 +36,7 @@ pub fn build(app: &App, w: usize) -> Line {
         _ => (glyph, t.muted),
     };
     line.push(Span::new(
-        format!(" {glyph} {word} "),
+        format!(" {glyph} {word:<STATE_W$} "),
         Style::new().fg(color).bold(),
     ));
     line.push(Span::new(format!("{} ", slot.harness().display_name()), muted));
@@ -68,21 +71,24 @@ pub fn build(app: &App, w: usize) -> Line {
                 meter(pct),
                 Style::new().fg(if hot { t.permission } else { t.accent }),
             ));
-            usage.push(Span::new(format!(" {pct}%"), Style::new()));
+            usage.push(Span::new(format!(" {pct:>3}%"), Style::new()));
         } else if let Some(used) = u.context_used {
             usage.push(Span::new("ctx ", muted));
-            usage.push(Span::new(short(used), Style::new()));
+            usage.push(Span::new(format!("{:<5}", short(used)), Style::new()));
         }
         if let Some(c) = u.cost_usd {
             if !usage.is_empty() {
                 usage.push(Span::new(" · ", muted));
             }
-            usage.push(Span::new(format!("${c:.2}"), Style::new()));
+            usage.push(Span::new(format!("{:<6}", format!("${c:.2}")), Style::new()));
         }
         if let (Some(i), Some(o)) = (u.input_tokens, u.output_tokens)
             && usage.is_empty()
         {
-            usage.push(Span::new(format!("{}↑ {}↓", short(i), short(o)), Style::new()));
+            usage.push(Span::new(
+                format!("{:>5}↑ {:>5}↓", short(i), short(o)),
+                Style::new(),
+            ));
         }
         if !usage.is_empty() {
             line.push(sep.clone());
@@ -93,7 +99,11 @@ pub fn build(app: &App, w: usize) -> Line {
             let mut parts = Vec::new();
             for win in &q.windows {
                 if let Some(p) = win.used_percent {
-                    parts.push(format!("{} {:.0}%", short_window(&win.id, win.window_minutes), p));
+                    parts.push(format!(
+                        "{} {:>3.0}%",
+                        short_window(&win.id, win.window_minutes),
+                        p
+                    ));
                 }
             }
             if !parts.is_empty() {

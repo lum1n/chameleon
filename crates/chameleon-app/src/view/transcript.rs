@@ -216,6 +216,13 @@ fn pending_lines(session: &acc_core::session::Session, theme: &Theme, w: usize) 
             ));
         }
         body.extend(wrap_line(&opts, cw, ""));
+        let steps = crate::overlay::steps(p);
+        if steps.len() > 1 {
+            body.push(Line::styled(
+                format!("+ {} more questions", steps.len() - 1),
+                Style::new().fg(theme.muted),
+            ));
+        }
         let (title, footer) = if question {
             ("? question", "enter: answer")
         } else {
@@ -466,7 +473,7 @@ fn reasoning(item: &Item, look: Look, ctx: &ItemCtx, cw: usize) -> Vec<Line> {
     };
     if look.expanded && !text.is_empty() {
         let md = MdStyle {
-            base: muted.italic(),
+            base: muted,
             code: muted,
             heading: muted.bold(),
             quote: muted.italic(),
@@ -474,7 +481,7 @@ fn reasoning(item: &Item, look: Look, ctx: &ItemCtx, cw: usize) -> Vec<Line> {
             muted,
             link: muted.underline(),
         };
-        let mut out = vec![Line::new(vec![glyph, Span::new("thinking", muted.italic())])];
+        let mut out = vec![Line::new(vec![glyph, Span::new("thinking", muted)])];
         for l in markdown::render(text, &md, cw.saturating_sub(2)) {
             let mut line = Line::raw("  ");
             line.spans.extend(l.spans);
@@ -491,7 +498,7 @@ fn reasoning(item: &Item, look: Look, ctx: &ItemCtx, cw: usize) -> Vec<Line> {
     let more = text.lines().filter(|l| !l.trim().is_empty()).count() > 1;
     let mut line = Line::new(vec![glyph]);
     let room = cw.saturating_sub(2 + if more { 2 } else { 0 });
-    line.push(Span::new(truncate(first.trim(), room), muted.italic()));
+    line.push(Span::new(truncate(first.trim(), room), muted));
     if more && look.selected {
         line.push(Span::new(" ⌄", muted));
     }
@@ -499,7 +506,8 @@ fn reasoning(item: &Item, look: Look, ctx: &ItemCtx, cw: usize) -> Vec<Line> {
 }
 
 /// A tool call, command or file change: one quiet line, its output under
-/// a gutter when it failed, is running, or is expanded.
+/// a gutter when it failed, is running, or is expanded. Dimmed like
+/// thinking, so the agent's own messages stand out.
 fn step(item: &Item, look: Look, ctx: &ItemCtx, cw: usize) -> Vec<Line> {
     let theme = ctx.theme;
     let muted = Style::new().fg(theme.muted);
@@ -507,9 +515,9 @@ fn step(item: &Item, look: Look, ctx: &ItemCtx, cw: usize) -> Vec<Line> {
     let glyph = |failed: bool| match item.status {
         ItemStatus::Running => Span::new(format!("{} ", ctx.spin), Style::new().fg(theme.thinking)),
         _ if failed => Span::new("✖ ", Style::new().fg(theme.error)),
-        _ => Span::new("• ", Style::new().fg(theme.tool)),
+        _ => Span::new("• ", muted),
     };
-    let name = |n: &str| Span::new(format!("{n}  "), Style::new().fg(theme.tool));
+    let name = |n: &str| Span::new(format!("{n}  "), muted);
     let mut out = Vec::new();
     match item.detail(ctx.harness) {
         ItemDetail::Command {
@@ -526,11 +534,7 @@ fn step(item: &Item, look: Look, ctx: &ItemCtx, cw: usize) -> Vec<Line> {
                 _ => {}
             }
             let cmd = short_command(command.trim(), ctx.cwd);
-            let head = Line::new(vec![
-                glyph(bad),
-                Span::new("$ ", Style::new().fg(theme.tool)),
-                Span::raw(cmd),
-            ]);
+            let head = Line::new(vec![glyph(bad), Span::new("$ ", muted), Span::new(cmd, muted)]);
             out.extend(head_line(head, meta, look, has_more(&output), cw, muted));
             out.extend(output_lines(&output, look, bad, item.status, ctx, cw));
         }
@@ -567,7 +571,7 @@ fn step(item: &Item, look: Look, ctx: &ItemCtx, cw: usize) -> Vec<Line> {
                     path = format!("{} → {path}", short_path(old, ctx.cwd));
                 }
                 let g = if i == 0 { glyph(bad) } else { Span::raw("  ") };
-                let head = Line::new(vec![g, name(word), Span::raw(path)]);
+                let head = Line::new(vec![g, name(word), Span::new(path, muted)]);
                 let meta = vec![
                     Span::new(format!("+{}", f.added), Style::new().fg(theme.add)),
                     Span::raw(" "),

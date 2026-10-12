@@ -64,6 +64,10 @@ pub enum Overlay {
         request_id: String,
         selected: usize,
         text: String,
+        /// Answers to the questions already stepped through (see [`steps`]).
+        answers: Vec<Vec<String>>,
+        /// Options ticked on the current multiple-choice question.
+        marked: Vec<usize>,
     },
     Launch(Wizard),
     Palette {
@@ -150,6 +154,8 @@ impl Overlay {
             request_id: p.request_id.clone(),
             selected,
             text: String::new(),
+            answers: Vec::new(),
+            marked: Vec::new(),
         }
     }
 
@@ -255,6 +261,20 @@ impl Overlay {
             Overlay::Panel { input: Some(t), .. } => t.push_str(text),
             _ => {}
         }
+    }
+}
+
+/// The questions a request is answered through one at a time: several
+/// questions, or one taking several picks. Empty when its options suffice.
+pub fn steps(p: &Permission) -> Vec<acc_core::question::Question> {
+    if p.kind != BlockKind::Question {
+        return Vec::new();
+    }
+    let qs = acc_core::question::parse(&p.input);
+    if qs.len() > 1 || qs.iter().any(|q| q.multi_select) {
+        qs
+    } else {
+        Vec::new()
     }
 }
 
@@ -404,6 +424,8 @@ impl App {
                 request_id,
                 selected,
                 text,
+                answers,
+                marked,
             } => {
                 let perm = self
                     .slot_mut(skey)
@@ -418,6 +440,68 @@ impl App {
                     self.toast("the request was already answered", false);
                     return Vec::new();
                 };
+                let steps = steps(&perm);
+                if let Some(q) = steps.get(answers.len()) {
+                    let labels: Vec<String> = q.options.iter().map(|o| o.label.clone()).collect();
+                    let n = labels.len().max(1);
+                    let mut done = None;
+                    match key.code {
+                        KeyCode::Esc => keep = false,
+                        KeyCode::Down | KeyCode::Tab => *selected = (*selected + 1) % n,
+                        KeyCode::Up | KeyCode::BackTab => *selected = (*selected + n - 1) % n,
+                        KeyCode::Char('j') if text.is_empty() => *selected = (*selected + 1) % n,
+                        KeyCode::Char('k') if text.is_empty() => *selected = (*selected + n - 1) % n,
+                        KeyCode::Char(' ') if text.is_empty() && q.multi_select => toggle(marked, *selected),
+                        KeyCode::Char(c) if c.is_ascii_digit() && text.is_empty() && !key.ctrl => {
+                            let i = c.to_digit(10).unwrap_or(0) as usize;
+                            if i >= 1 && i <= labels.len() {
+                                *selected = i - 1;
+                                if q.multi_select {
+                                    toggle(marked, i - 1);
+                                } else {
+                                    done = Some(vec![labels[i - 1].clone()]);
+                                }
+                            }
+                        }
+                        KeyCode::Enter => {
+                            done = if !text.trim().is_empty() {
+                                Some(vec![text.trim().to_owned()])
+                            } else if q.multi_select && !marked.is_empty() {
+                                marked.sort_unstable();
+                                Some(marked.iter().filter_map(|&i| labels.get(i).cloned()).collect())
+                            } else {
+                                labels.get(*selected).map(|l| vec![l.clone()])
+                            };
+                        }
+                        // Back to the previous question.
+                        KeyCode::Backspace if text.is_empty() => {
+                            answers.pop();
+                            marked.clear();
+                            *selected = 0;
+                        }
+                        KeyCode::Backspace => {
+                            text.pop();
+                        }
+                        KeyCode::Char('u') if key.ctrl => text.clear(),
+                        KeyCode::Char(c) if !key.ctrl && !key.alt => text.push(c),
+                        _ => {}
+                    }
+                    if let Some(a) = done {
+                        answers.push(a);
+                        text.clear();
+                        marked.clear();
+                        *selected = 0;
+                        if answers.len() == steps.len() {
+                            keep = false;
+                            let encoded = acc_core::question::encode(answers);
+                            out = self.answer(skey, request_id, &encoded);
+                        }
+                    }
+                    if keep && self.overlay.is_none() {
+                        self.overlay = Some(overlay);
+                    }
+                    return out;
+                }
                 let n = perm.options.len();
                 match key.code {
                     KeyCode::Esc => keep = false,
@@ -865,6 +949,7 @@ impl App {
                     fork: false,
                     title: None,
                     prompt: opt(&w.fields[3]),
+                    attachments: Vec::new(),
                     parent: None,
                     replaces_parent: false,
                     origin: Origin::Started,
@@ -1056,5 +1141,14 @@ pub fn file_changes(detail: &ItemDetail) -> Option<&[acc_core::item::FileDiff]> 
     match detail {
         ItemDetail::FileChange { files } => Some(files),
         _ => None,
+    }
+}
+
+/// Ticks or unticks option `i`.
+fn toggle(marked: &mut Vec<usize>, i: usize) {
+    if let Some(at) = marked.iter().position(|&m| m == i) {
+        marked.remove(at);
+    } else {
+        marked.push(i);
     }
 }

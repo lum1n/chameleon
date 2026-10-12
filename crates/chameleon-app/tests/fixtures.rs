@@ -198,6 +198,56 @@ fn launches_claude_follows_the_log_and_renders_the_chat() {
 }
 
 #[test]
+fn several_questions_are_answered_one_by_one() {
+    let mut a = app();
+    let (key, _) = launch(&mut a, Harness::Claude, "");
+    a.handle(
+        AppEvent::ExecDone {
+            host: key.host.clone(),
+            tag: ExecTag::Launch(key.id.clone()),
+            result: ok("1\n"),
+        },
+        4,
+    );
+    let ask = serde_json::json!({"type":"control_request","request_id":"q1","request":{
+        "subtype":"can_use_tool","tool_name":"AskUserQuestion","tool_use_id":"toolu_q",
+        "input":{"questions":[
+            {"question":"Which DB?","header":"DB","multiSelect":false,
+                "options":[{"label":"Postgres","description":""},{"label":"SQLite","description":""}]},
+            {"question":"Which extras?","header":"Extras","multiSelect":true,
+                "options":[{"label":"Cache","description":""},{"label":"Search","description":""}]}]}}});
+    feed(&mut a, &key, &format!("{ask}\n"), 5);
+    let card: Vec<String> = a.screen().transcript.lines.iter().map(|l| l.text()).collect();
+    assert!(card.iter().any(|l| l.contains("+ 1 more questions")), "{card:?}");
+
+    // Enter on the transcript opens the card the footer promises.
+    a.handle(press(KeyCode::Esc), 6);
+    a.handle(press(KeyCode::Enter), 6);
+    let ov = a.screen().overlay.expect("question overlay");
+    assert!(ov.lines.iter().any(|l| l.text().contains("DB · 1 of 2")));
+    assert!(
+        a.handle(ch('2'), 7).is_empty(),
+        "the first answer waits for the rest"
+    );
+    let ov = a.screen().overlay.expect("still open for question two");
+    assert!(ov.lines.iter().any(|l| l.text().contains("[ ] Cache")));
+    a.handle(ch(' '), 7);
+    a.handle(ch('j'), 7);
+    a.handle(ch(' '), 7);
+    let fx = a.handle(press(KeyCode::Enter), 8);
+    assert!(a.overlay().is_none());
+    let input = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::Input { exec, .. } => Some(String::from_utf8_lossy(&exec.stdin).into_owned()),
+            _ => None,
+        })
+        .expect("the answers are sent");
+    assert!(input.contains(r#""Which DB?":"SQLite""#), "{input}");
+    assert!(input.contains(r#""Which extras?":"Cache, Search""#), "{input}");
+}
+
+#[test]
 fn permission_card_answers_and_clears() {
     let mut a = app();
     let (key, _) = launch(&mut a, Harness::Claude, "");

@@ -792,7 +792,14 @@ impl App {
         match self.slots[i].phase {
             Phase::Listed => self.attach(i),
             Phase::Live => {
-                if self.focus == Pane::Sidebar {
+                // A waiting request is what enter answers ("enter: answer").
+                if let Some(p) = self.slots[i]
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.permissions().first())
+                {
+                    self.overlay = Some(Overlay::permission(key, p, false));
+                } else if self.focus == Pane::Sidebar {
                     self.focus = Pane::Composer;
                 }
                 Vec::new()
@@ -817,10 +824,17 @@ impl App {
             return Vec::new();
         }
         let text = self.composer.take();
+        self.focus = Pane::Transcript;
         if let Some(s) = self.slot_mut(&key) {
             s.scroll = Default::default();
         }
-        self.send(&key, Command::Prompt { text })
+        self.send(
+            &key,
+            Command::Prompt {
+                text,
+                attachments: Vec::new(),
+            },
+        )
     }
 
     fn send_selected(&mut self, cmd: Command) -> Vec<Effect> {

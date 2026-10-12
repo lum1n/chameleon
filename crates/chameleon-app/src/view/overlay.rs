@@ -5,7 +5,7 @@ use acc_core::state::BlockKind;
 use crate::keymap::Action;
 use crate::model::App;
 use crate::overlay::{
-    ConfirmAction, Overlay, Wizard, file_changes, option_label, panel_actions, permission_modes,
+    ConfirmAction, Overlay, Wizard, file_changes, option_label, panel_actions, permission_modes, steps,
 };
 use crate::style::{Line, Span, Style};
 use crate::view::spinner;
@@ -113,7 +113,9 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
             request_id,
             selected,
             text,
-        } => permission_view(app, key, request_id, *selected, text, area),
+            answers,
+            marked,
+        } => permission_view(app, key, request_id, *selected, text, answers, marked, area),
         Overlay::Themes { selected, .. } => themes_view(app, *selected, area),
         Overlay::Launch(w) => launch_view(app, w, area),
         Overlay::Palette { query, selected } => {
@@ -487,12 +489,15 @@ fn padded(mut l: Line) -> Line {
 /// │    3  Deny                                         │
 /// ╰──────── y allow · n deny · 1-9 pick · esc later ───╯
 /// ```
+#[allow(clippy::too_many_arguments)]
 fn permission_view(
     app: &App,
     key: &crate::slot::SessionKey,
     request_id: &str,
     selected: usize,
     text: &str,
+    answers: &[Vec<String>],
+    marked: &[usize],
     area: Rect,
 ) -> OverlayView {
     let theme = app.theme;
@@ -526,6 +531,10 @@ fn permission_view(
             truncate(&format!("{} · {}", s.harness().display_name(), s.title()), w),
             muted,
         )));
+    }
+    let steps = steps(p);
+    if let Some(q) = steps.get(answers.len()) {
+        return question_step(app, rect, lines, w, &steps, q, selected, text, answers, marked);
     }
     for l in wrap_line(&Line::styled(p.title.clone(), Style::new().bold()), w, "") {
         lines.push(padded(l));
@@ -600,6 +609,121 @@ fn permission_view(
         } else {
             "approval".into()
         },
+        lines,
+        footer: Some(Line::styled(footer, muted)),
+        cursor,
+        tone: Some(tone),
+    }
+}
+
+/// One question of several, or one taking several picks.
+///
+/// ```text
+/// ╭─ question ─────────────────────────────────────────╮
+/// │  Claude Code · fix the tests                       │
+/// │  DB · 1 of 2                                       │
+/// │  Which database?                                   │
+/// │                                                    │
+/// │  ❯ 1 [x] Postgres  the big one                     │
+/// │    2 [ ] SQLite                                    │
+/// ╰─────── space tick · enter next · ⌫ back · esc later ╯
+/// ```
+#[allow(clippy::too_many_arguments)]
+fn question_step(
+    app: &App,
+    rect: Rect,
+    mut lines: Vec<Line>,
+    w: usize,
+    steps: &[acc_core::question::Question],
+    q: &acc_core::question::Question,
+    selected: usize,
+    text: &str,
+    answers: &[Vec<String>],
+    marked: &[usize],
+) -> OverlayView {
+    let theme = app.theme;
+    let muted = Style::new().fg(theme.muted);
+    let tone = theme.permission;
+    let i = answers.len();
+    let mut head = format!("{} of {}", i + 1, steps.len());
+    if let Some(h) = &q.header {
+        head = format!("{h} · {head}");
+    }
+    if q.multi_select {
+        head.push_str(" · pick any");
+    }
+    lines.push(padded(Line::styled(truncate(&head, w), Style::new().fg(tone))));
+    for l in wrap_line(&Line::styled(q.question.clone(), Style::new().bold()), w, "") {
+        lines.push(padded(l));
+    }
+    for (prev, a) in steps.iter().zip(answers) {
+        let label = prev.header.as_deref().unwrap_or(&prev.question);
+        lines.push(padded(Line::styled(
+            truncate(&format!("✓ {label}: {}", a.join(", ")), w),
+            muted,
+        )));
+    }
+    lines.push(Line::default());
+    for (n, o) in q.options.iter().enumerate() {
+        let chosen = n == selected && text.is_empty();
+        let mut l = Line::new(vec![
+            Span::new(if chosen { "❯ " } else { "  " }, Style::new().fg(tone).bold()),
+            Span::new(format!("{}  ", n + 1), muted),
+        ]);
+        if q.multi_select {
+            let ticked = marked.contains(&n);
+            l.push(Span::new(
+                if ticked { "[x] " } else { "[ ] " },
+                Style::new().fg(if ticked { theme.done } else { theme.muted }),
+            ));
+        }
+        l.push(Span::new(
+            o.label.clone(),
+            if chosen {
+                Style::new().fg(tone).bold()
+            } else {
+                Style::new()
+            },
+        ));
+        if let Some(d) = &o.description {
+            l.push(Span::new(format!("  {d}"), muted));
+        }
+        lines.extend(wrap_hang(&l, w, &Line::raw("       ")).into_iter().map(padded));
+    }
+    lines.push(Line::default());
+    lines.push(padded(Line::styled("or type an answer", muted)));
+    let box_w = w.saturating_sub(4);
+    let shown = tail(text, box_w);
+    let edge = Style::new().fg(if text.is_empty() {
+        theme.border
+    } else {
+        theme.accent
+    });
+    lines.push(padded(Line::styled(format!("╭{}╮", "─".repeat(box_w + 2)), edge)));
+    let cursor = Some((
+        PAD.len() as u16 + 2 + crate::wrap::width(&shown) as u16,
+        lines.len() as u16,
+    ));
+    lines.push(padded(Line::new(vec![
+        Span::new("│ ", edge),
+        Span::raw(fit(&shown, box_w)),
+        Span::new(" │", edge),
+    ])));
+    lines.push(padded(Line::styled(format!("╰{}╯", "─".repeat(box_w + 2)), edge)));
+    let next = if i + 1 == steps.len() { "send" } else { "next" };
+    let mut footer = if q.multi_select {
+        format!("space tick · enter {next}")
+    } else {
+        format!("1-9 pick · enter {next}")
+    };
+    if i > 0 {
+        footer.push_str(" · ⌫ back");
+    }
+    footer.push_str(" · esc later");
+    let (rect, lines, cursor) = fit_content(rect, lines, cursor);
+    OverlayView {
+        rect,
+        title: "question".into(),
         lines,
         footer: Some(Line::styled(footer, muted)),
         cursor,
