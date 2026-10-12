@@ -72,6 +72,7 @@ impl App {
 
     /// Sends a command to a session, or relaunches when the harness needs it.
     pub(crate) fn send(&mut self, key: &SessionKey, cmd: Command) -> Vec<Effect> {
+        let now = self.now_ms;
         let Some(slot) = self.slot_mut(key) else {
             return Vec::new();
         };
@@ -93,7 +94,9 @@ impl App {
                         exec: session.input_exec(bytes),
                     });
                 }
+                let updates = session.take_updates(now);
                 let i = self.slot_index(key).unwrap_or(0);
+                out.extend(self.process_updates(i, updates));
                 out.extend(self.flush(i));
                 out
             }
