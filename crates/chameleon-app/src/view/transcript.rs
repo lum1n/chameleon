@@ -1,5 +1,11 @@
 //! The conversation pane: items rendered through `ItemDetail`, wrapped and
 //! cached per item, windowed to the visible lines.
+//!
+//! A subagent's child conversation is folded into its [`ItemKind::Subagent`]
+//! item: hidden until that item is expanded, then rendered inline and
+//! indented, same as the rest of the transcript.
+
+use std::collections::HashSet;
 
 use acc_core::Harness;
 use acc_core::event::ItemKind;
@@ -53,22 +59,34 @@ pub fn build(app: &mut App, rect: Rect) -> PaneView {
     };
     let items = session.transcript().items();
     let cursor = slot.cursor.filter(|c| *c < items.len());
+    // Ids with at least one child in the transcript: a running or finished
+    // subagent, foldable open.
+    let parents: HashSet<&str> = items.iter().filter_map(|it| it.parent.as_deref()).collect();
 
-    // Heights of every item (cached), then the window.
+    // Heights of every item (cached), then the window. A subagent's child
+    // conversation contributes nothing while folded: its items stay in the
+    // flat list (so the cursor and scroll math need no second indexing
+    // scheme) but render to zero lines.
     let mut heights = Vec::with_capacity(items.len());
     let mut total = 0usize;
     for (idx, item) in items.iter().enumerate() {
+        if hidden(item, &slot.expanded) {
+            heights.push(0);
+            continue;
+        }
         let rev = slot.revisions.get(&item.id).copied().unwrap_or(0);
         let look = Look {
             expanded: slot.expanded.contains(&item.id),
             selected: cursor == Some(idx),
             // Steps of one turn (thinking, tools) stack without gaps.
-            gap: !(is_step(item) && items.get(idx + 1).is_some_and(is_step)),
+            gap: !(is_step(item) && next_visible(items, &slot.expanded, idx).is_some_and(is_step)),
+            children: parents.contains(item.id.as_str()),
         };
-        let rev = rev.wrapping_mul(8)
-            + u64::from(look.gap) * 4
-            + u64::from(look.expanded) * 2
-            + u64::from(look.selected);
+        let rev = rev.wrapping_mul(16)
+            + u64::from(look.gap) * 8
+            + u64::from(look.expanded) * 4
+            + u64::from(look.selected) * 2
+            + u64::from(look.children);
         let cacheable = item.status != ItemStatus::Running;
         let n = slot
             .wrap
@@ -112,6 +130,11 @@ pub fn build(app: &mut App, rect: Rect) -> PaneView {
     let mut pos = 0usize;
     for (idx, item) in items.iter().enumerate() {
         let n = heights[idx];
+        // Folded: not rendered this pass, so its cache entry (if any, from
+        // when it was last expanded) is stale and must not be read.
+        if n == 0 {
+            continue;
+        }
         if pos + n <= start {
             pos += n;
             continue;
@@ -317,7 +340,9 @@ pub(crate) fn request_preview(
             ]));
             raw.extend(json_lines(&input, muted));
         }
-        Some(ItemDetail::Text) | None => raw.extend(json_lines(&p.input, muted)),
+        Some(ItemDetail::Text) | Some(ItemDetail::Subagent { .. }) | None => {
+            raw.extend(json_lines(&p.input, muted))
+        }
     }
     raw.iter().flat_map(|l| wrap_line(l, w, "  ")).collect()
 }
@@ -374,11 +399,23 @@ pub struct Look {
     pub selected: bool,
     /// A blank line after the item.
     pub gap: bool,
+    /// A subagent run with a child conversation to fold open.
+    pub children: bool,
 }
 
 /// Thinking and tool calls: the steps between messages.
 fn is_step(item: &Item) -> bool {
     !matches!(item.kind, ItemKind::UserMessage | ItemKind::AgentMessage)
+}
+
+/// A subagent's child, folded under its still-collapsed parent.
+pub(crate) fn hidden(item: &Item, expanded: &HashSet<acc_core::event::ItemId>) -> bool {
+    item.parent.as_deref().is_some_and(|p| !expanded.contains(p))
+}
+
+/// The next item that isn't folded away, for gap and layout decisions.
+fn next_visible<'a>(items: &'a [Item], expanded: &HashSet<acc_core::event::ItemId>, idx: usize) -> Option<&'a Item> {
+    items[idx + 1..].iter().find(|it| !hidden(it, expanded))
 }
 
 /// Output lines shown under a failed or running step.
@@ -445,7 +482,7 @@ pub fn render_item(item: &Item, look: Look, ctx: &ItemCtx) -> Vec<Line> {
             }
         }
         ItemKind::Reasoning => out.extend(reasoning(item, look, ctx, cw)),
-        ItemKind::ToolCall | ItemKind::CommandExecution | ItemKind::FileChange => {
+        ItemKind::ToolCall | ItemKind::CommandExecution | ItemKind::FileChange | ItemKind::Subagent => {
             out.extend(step(item, look, ctx, cw));
         }
     }
@@ -600,6 +637,31 @@ fn step(item: &Item, look: Look, ctx: &ItemCtx, cw: usize) -> Vec<Line> {
                 muted,
             ));
             out.extend(output_lines(&rest, look, failed(None), item.status, ctx, cw));
+        }
+        ItemDetail::Subagent {
+            agent,
+            description,
+            output,
+            ..
+        } => {
+            let bad = failed(None);
+            let output = output.unwrap_or_default();
+            let meta = if item.status == ItemStatus::Running {
+                Vec::new()
+            } else {
+                count(&output, muted)
+            };
+            let label = agent.unwrap_or_else(|| "Task".to_owned());
+            let head = Line::new(vec![glyph(bad), name(&label), Span::new(description, muted)]);
+            out.extend(head_line(
+                head,
+                meta,
+                look,
+                has_more(&output) || look.children,
+                cw,
+                muted,
+            ));
+            out.extend(output_lines(&output, look, bad, item.status, ctx, cw));
         }
     }
     out

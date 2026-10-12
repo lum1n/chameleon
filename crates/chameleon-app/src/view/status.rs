@@ -135,6 +135,9 @@ pub fn build(app: &App, w: usize) -> Line {
                 acc_core::item::ItemDetail::FileChange { files } => {
                     files.first().map(|f| f.path.clone()).unwrap_or_default()
                 }
+                acc_core::item::ItemDetail::Subagent { agent, description, .. } => {
+                    format!("{} {description}", agent.as_deref().unwrap_or("subagent"))
+                }
                 acc_core::item::ItemDetail::Text => String::new(),
             };
             if !what.is_empty() {

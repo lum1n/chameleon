@@ -749,20 +749,30 @@ impl App {
         self.slot_mut(&key)
     }
 
-    /// Moves the transcript's item cursor.
+    /// Moves the transcript's item cursor, skipping a folded subagent's
+    /// hidden children.
     fn cursor_move(&mut self, down: bool) {
         if let Some(s) = self.selected_slot_mut()
             && let Some(session) = &s.session
         {
-            let n = session.transcript().len();
-            if n == 0 {
+            let items = session.transcript().items();
+            if items.is_empty() {
                 return;
             }
-            s.cursor = Some(match (s.cursor, down) {
+            let n = items.len();
+            let mut c = match (s.cursor, down) {
                 (None, _) => n - 1,
                 (Some(c), true) => (c + 1).min(n - 1),
                 (Some(c), false) => c.saturating_sub(1),
-            });
+            };
+            while crate::view::transcript::hidden(&items[c], &s.expanded) {
+                let next = if down { c + 1 } else { c.saturating_sub(1) };
+                if next == c {
+                    break;
+                }
+                c = next;
+            }
+            s.cursor = Some(c);
             s.scroll.follow = false;
             s.scroll.to_cursor = true;
         }

@@ -3,6 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use acc_core::Harness;
+use acc_core::item::ItemDetail;
 use chameleon_app::config::Config;
 use chameleon_app::keymap::{Key, KeyCode};
 use chameleon_app::{App, AppEvent, Effect, ExecOutput, ExecTag, SessionKey};
@@ -11,6 +12,8 @@ const CLAUDE_HI: &str =
     include_str!("../../../../acc/crates/acc-core/tests/fixtures/claude/hi-and-controls.ndjson");
 const CLAUDE_PERMISSION: &str =
     include_str!("../../../../acc/crates/acc-core/tests/fixtures/claude/permission-deny.ndjson");
+const CLAUDE_SUBAGENTS: &str =
+    include_str!("../../../../acc/crates/acc-core/tests/fixtures/claude/subagents.ndjson");
 const CODEX_HANDSHAKE: &str =
     include_str!("../../../../acc/crates/acc-core/tests/fixtures/codex/handshake.ndjson");
 const PI_TURN: &str =
@@ -198,6 +201,87 @@ fn launches_claude_follows_the_log_and_renders_the_chat() {
     let path = sidebar.lines.iter().position(|l| l.text().trim() == "/work");
     assert!(path.is_some(), "the session's directory sits under it");
     assert_eq!(sidebar.hits[path.unwrap()], sidebar.hits[path.unwrap() - 1]);
+}
+
+#[test]
+fn a_subagents_child_conversation_folds_until_its_step_is_expanded() {
+    let mut a = app();
+    let (key, _) = launch(&mut a, Harness::Claude, "hi");
+    a.handle(
+        AppEvent::ExecDone {
+            host: key.host.clone(),
+            tag: ExecTag::Launch(key.id.clone()),
+            result: ok("4242\n"),
+        },
+        4,
+    );
+    feed(&mut a, &key, CLAUDE_SUBAGENTS, 5);
+
+    // The subagent that ran `ls -la ...`: its command is distinctive enough
+    // to use as a marker for whether its child conversation is showing.
+    let marker = "ls -la /tmp/acc-sub-spike";
+    let (cursor_idx, items_len) = {
+        let slot = a.selected().expect("the session is selected");
+        let session = slot.session.as_ref().unwrap();
+        let transcript = session.transcript();
+        let cmd = transcript
+            .items()
+            .iter()
+            .find(|i| {
+                matches!(i.detail(Harness::Claude), ItemDetail::Command { command, .. } if command.contains(marker))
+            })
+            .expect("the subagent's ls command is in the transcript");
+        let sub_id = cmd.parent.clone().expect("the command belongs to a subagent run");
+        assert!(
+            transcript.subagents().any(|s| s.id == sub_id),
+            "its parent is a subagent item"
+        );
+        let cursor_idx = transcript
+            .items()
+            .iter()
+            .position(|i| i.id == sub_id)
+            .expect("the subagent item is in the transcript");
+        (cursor_idx, transcript.len())
+    };
+
+    // Folded by default: the child conversation's command doesn't show.
+    let screen = a.screen();
+    let before: Vec<String> = screen.transcript.lines.iter().map(|l| l.text()).collect();
+    assert!(
+        !before.iter().any(|l| l.contains(marker)),
+        "a subagent's child conversation is folded by default: {before:?}"
+    );
+
+    // Move the cursor onto the subagent's own step and expand it.
+    a.handle(AppEvent::Key(Key::alt(KeyCode::Char('2'))), 6);
+    for _ in 0..items_len {
+        if a.selected().and_then(|s| s.cursor) == Some(cursor_idx) {
+            break;
+        }
+        a.handle(ch('k'), 6);
+    }
+    assert_eq!(
+        a.selected().and_then(|s| s.cursor),
+        Some(cursor_idx),
+        "the cursor reaches the subagent's own step"
+    );
+    a.handle(ch(' '), 6);
+
+    let screen = a.screen();
+    let after: Vec<String> = screen.transcript.lines.iter().map(|l| l.text()).collect();
+    assert!(
+        after.iter().any(|l| l.contains(marker)),
+        "expanding the subagent's step reveals its child conversation: {after:?}"
+    );
+
+    // Collapse it again: folded away once more.
+    a.handle(ch(' '), 7);
+    let screen = a.screen();
+    let collapsed: Vec<String> = screen.transcript.lines.iter().map(|l| l.text()).collect();
+    assert!(
+        !collapsed.iter().any(|l| l.contains(marker)),
+        "collapsing it again folds the child conversation away: {collapsed:?}"
+    );
 }
 
 #[test]

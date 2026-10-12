@@ -211,6 +211,7 @@ impl Slot {
                                 acc_core::event::ItemKind::ToolCall
                                     | acc_core::event::ItemKind::CommandExecution
                                     | acc_core::event::ItemKind::FileChange
+                                    | acc_core::event::ItemKind::Subagent
                             )
                     })
                 });
