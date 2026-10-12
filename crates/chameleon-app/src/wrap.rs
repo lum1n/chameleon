@@ -42,6 +42,33 @@ pub fn truncate(s: &str, max: usize) -> String {
     out
 }
 
+/// A path cut from the left to at most `max` columns, so its last
+/// directories stay: `…/repos/sessh`. Cuts at a `/` when one fits.
+pub fn truncate_path(s: &str, max: usize) -> String {
+    if width(s) <= max {
+        return s.to_owned();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut tail = String::new();
+    let mut w = 0;
+    for c in s.chars().rev() {
+        let cw = width(c.encode_utf8(&mut [0u8; 4]));
+        if w + cw > max.saturating_sub(1) {
+            break;
+        }
+        tail.insert(0, c);
+        w += cw;
+    }
+    if let Some(i) = tail.find('/')
+        && tail[i + 1..].contains(|c| c != '/')
+    {
+        tail.drain(..i);
+    }
+    format!("…{tail}")
+}
+
 /// Pads or truncates to exactly `cols` columns.
 pub fn fit(s: &str, cols: usize) -> String {
     let mut t = truncate(s, cols);
@@ -229,6 +256,14 @@ mod tests {
 
     fn texts(lines: &[Line]) -> Vec<String> {
         lines.iter().map(Line::text).collect()
+    }
+
+    #[test]
+    fn paths_keep_their_last_directories() {
+        assert_eq!(truncate_path("~/repos/sessh", 20), "~/repos/sessh");
+        assert_eq!(truncate_path("/home/vegard/repos/sessh", 16), "…/repos/sessh");
+        assert_eq!(truncate_path("/home/vegard/repos/sessh", 8), "…/sessh");
+        assert_eq!(truncate_path("/home/vegard/repos/chameleon", 6), "…eleon");
     }
 
     #[test]

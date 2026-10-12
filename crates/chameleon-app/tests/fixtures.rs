@@ -195,6 +195,9 @@ fn launches_claude_follows_the_log_and_renders_the_chat() {
     assert!(status.contains("Claude Code"), "{status}");
     let sidebar = screen.sidebar.expect("sidebar is shown at 120 columns");
     assert!(sidebar.lines.iter().any(|l| l.text().contains("claude")));
+    let path = sidebar.lines.iter().position(|l| l.text().trim() == "/work");
+    assert!(path.is_some(), "the session's directory sits under it");
+    assert_eq!(sidebar.hits[path.unwrap()], sidebar.hits[path.unwrap() - 1]);
 }
 
 #[test]

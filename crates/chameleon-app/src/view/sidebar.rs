@@ -3,14 +3,16 @@
 //! ```text
 //!  local ──────── 3
 //! ▌1 ⚠ fix the te…  claude
+//!      …/repos/sessh
 //!  2 ⠋ bump deps     codex
+//!      ~/acc
 //! ```
 
 use crate::model::{App, FeedStatus, Pane};
 use crate::slot::{Phase, Urgency};
 use crate::style::{Color, Line, Span, Style};
 use crate::view::{PaneView, Rect, spinner};
-use crate::wrap::{fit, truncate, width};
+use crate::wrap::{fit, truncate, truncate_path, width};
 
 pub fn build(app: &App, rect: Rect) -> PaneView {
     let w = rect.w as usize;
@@ -121,6 +123,15 @@ pub fn build(app: &App, rect: Rect) -> PaneView {
             ));
             lines.push(line);
             hits.push(Some(key.clone()));
+            // Where it runs, under the title: the last directories count most.
+            let cwd = slot.spec.cwd.trim_end_matches('/');
+            if !cwd.is_empty() {
+                lines.push(Line::styled(
+                    format!("     {}", truncate_path(cwd, w.saturating_sub(6))),
+                    muted,
+                ));
+                hits.push(Some(key.clone()));
+            }
         }
     }
     if keys.is_empty() {
@@ -137,13 +148,14 @@ pub fn build(app: &App, rect: Rect) -> PaneView {
         ]));
         hits.extend(std::iter::repeat_n(None, 5));
     }
-    // Keep the selection in view.
+    // Keep the selection, and the path under it, in view.
     let h = rect.h as usize;
     let mut offset = 0;
-    if let Some(s) = sel
-        && s >= h
-    {
-        offset = s + 1 - h;
+    if let Some(s) = sel {
+        let last = if hits.get(s + 1) == hits.get(s) { s + 1 } else { s };
+        if last >= h {
+            offset = last + 1 - h;
+        }
     }
     let lines: Vec<Line> = lines.into_iter().skip(offset).take(h).collect();
     let hits: Vec<_> = hits.into_iter().skip(offset).take(h).collect();
