@@ -203,8 +203,12 @@ fn launches_claude_follows_the_log_and_renders_the_chat() {
     assert_eq!(sidebar.hits[path.unwrap()], sidebar.hits[path.unwrap() - 1]);
 }
 
+fn transcript_text(a: &mut App) -> Vec<String> {
+    a.screen().transcript.lines.iter().map(|l| l.text()).collect()
+}
+
 #[test]
-fn a_subagents_child_conversation_folds_until_its_step_is_expanded() {
+fn a_subagent_opens_as_its_own_conversation_and_esc_goes_back() {
     let mut a = app();
     let (key, _) = launch(&mut a, Harness::Claude, "hi");
     a.handle(
@@ -218,11 +222,10 @@ fn a_subagents_child_conversation_folds_until_its_step_is_expanded() {
     feed(&mut a, &key, CLAUDE_SUBAGENTS, 5);
 
     // The subagent that ran `ls -la ...`: its command is distinctive enough
-    // to use as a marker for whether its child conversation is showing.
+    // to use as a marker for whether its conversation is showing.
     let marker = "ls -la /tmp/acc-sub-spike";
-    let (cursor_idx, items_len) = {
-        let slot = a.selected().expect("the session is selected");
-        let session = slot.session.as_ref().unwrap();
+    let (sub_id, sub_idx, items_len, n_agents) = {
+        let session = a.selected().unwrap().session.as_ref().unwrap();
         let transcript = session.transcript();
         let cmd = transcript
             .items()
@@ -232,56 +235,90 @@ fn a_subagents_child_conversation_folds_until_its_step_is_expanded() {
             })
             .expect("the subagent's ls command is in the transcript");
         let sub_id = cmd.parent.clone().expect("the command belongs to a subagent run");
-        assert!(
-            transcript.subagents().any(|s| s.id == sub_id),
-            "its parent is a subagent item"
-        );
-        let cursor_idx = transcript
-            .items()
-            .iter()
-            .position(|i| i.id == sub_id)
-            .expect("the subagent item is in the transcript");
-        (cursor_idx, transcript.len())
+        assert!(transcript.subagents().any(|s| s.id == sub_id));
+        let sub_idx = transcript.items().iter().position(|i| i.id == sub_id).unwrap();
+        (sub_id, sub_idx, transcript.len(), transcript.subagents().count())
     };
 
-    // Folded by default: the child conversation's command doesn't show.
-    let screen = a.screen();
-    let before: Vec<String> = screen.transcript.lines.iter().map(|l| l.text()).collect();
-    assert!(
-        !before.iter().any(|l| l.contains(marker)),
-        "a subagent's child conversation is folded by default: {before:?}"
-    );
+    // Main shows only main's own items.
+    let main = transcript_text(&mut a);
+    assert!(!main.iter().any(|l| l.contains(marker)), "{main:?}");
 
-    // Move the cursor onto the subagent's own step and expand it.
+    // Put the cursor on the subagent's step; it offers to open.
     a.handle(AppEvent::Key(Key::alt(KeyCode::Char('2'))), 6);
     for _ in 0..items_len {
-        if a.selected().and_then(|s| s.cursor) == Some(cursor_idx) {
+        if a.selected().and_then(|s| s.cursor) == Some(sub_idx) {
             break;
         }
         a.handle(ch('k'), 6);
     }
+    assert_eq!(a.selected().and_then(|s| s.cursor), Some(sub_idx));
+    assert!(transcript_text(&mut a).iter().any(|l| l.contains("⏎ open")));
+
+    // Enter opens its conversation under a breadcrumb.
+    a.handle(press(KeyCode::Enter), 7);
+    assert_eq!(a.selected().unwrap().scope(), Some(sub_id.as_str()));
+    let sub = transcript_text(&mut a);
+    assert!(sub[0].starts_with("main › "), "{sub:?}");
+    assert!(sub.iter().any(|l| l.contains(marker)), "{sub:?}");
+    // j/k stay inside it.
+    for _ in 0..items_len {
+        a.handle(ch('j'), 7);
+    }
+    let c = a.selected().and_then(|s| s.cursor).unwrap();
+    let session = a.selected().unwrap().session.as_ref().unwrap();
     assert_eq!(
-        a.selected().and_then(|s| s.cursor),
-        Some(cursor_idx),
-        "the cursor reaches the subagent's own step"
-    );
-    a.handle(ch(' '), 6);
-
-    let screen = a.screen();
-    let after: Vec<String> = screen.transcript.lines.iter().map(|l| l.text()).collect();
-    assert!(
-        after.iter().any(|l| l.contains(marker)),
-        "expanding the subagent's step reveals its child conversation: {after:?}"
+        session.transcript().items()[c].parent.as_deref(),
+        Some(sub_id.as_str())
     );
 
-    // Collapse it again: folded away once more.
-    a.handle(ch(' '), 7);
-    let screen = a.screen();
-    let collapsed: Vec<String> = screen.transcript.lines.iter().map(|l| l.text()).collect();
-    assert!(
-        !collapsed.iter().any(|l| l.contains(marker)),
-        "collapsing it again folds the child conversation away: {collapsed:?}"
+    // Esc goes back to main, the cursor where it was.
+    a.handle(press(KeyCode::Esc), 8);
+    assert_eq!(a.selected().unwrap().scope(), None);
+    assert_eq!(a.selected().and_then(|s| s.cursor), Some(sub_idx));
+    assert!(!transcript_text(&mut a).iter().any(|l| l.contains(marker)));
+    assert_eq!(
+        a.focus(),
+        chameleon_app::Pane::Transcript,
+        "esc only left the subagent"
     );
+
+    // ] steps through every subagent and wraps around to main.
+    let mut seen = Vec::new();
+    for _ in 0..=n_agents {
+        a.handle(ch(']'), 9);
+        seen.push(a.selected().unwrap().scope().map(str::to_owned));
+    }
+    assert_eq!(seen.last(), Some(&None), "back to main after the last one");
+    assert!(seen.contains(&Some(sub_id.clone())));
+    a.handle(ch('['), 9);
+    assert!(
+        a.selected().unwrap().scope().is_some(),
+        "[ goes to the last subagent"
+    );
+
+    // The picker lists main and every run, and opens the chosen one.
+    a.handle(ch('a'), 10);
+    let Some(chameleon_app::overlay::Overlay::Agents { selected, .. }) = a.overlay() else {
+        panic!("the agents picker opens");
+    };
+    assert_ne!(*selected, 0, "it starts on the conversation shown");
+    a.handle(ch('g'), 10);
+    a.handle(press(KeyCode::Enter), 10);
+    assert!(a.overlay().is_none());
+    assert_eq!(a.selected().unwrap().scope(), None, "picked main");
+
+    // A prompt goes to the main agent, so the view returns there.
+    a.handle(ch(']'), 11);
+    assert!(a.selected().unwrap().scope().is_some());
+    a.handle(ch('i'), 11);
+    a.handle(ch('x'), 11);
+    let fx = a.handle(press(KeyCode::Enter), 11);
+    assert!(
+        fx.iter().any(|e| matches!(e, Effect::Input { .. })),
+        "the prompt is sent"
+    );
+    assert_eq!(a.selected().unwrap().scope(), None);
 }
 
 #[test]

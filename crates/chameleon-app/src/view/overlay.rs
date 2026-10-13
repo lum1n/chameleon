@@ -117,6 +117,7 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
             marked,
         } => permission_view(app, key, request_id, *selected, text, answers, marked, area),
         Overlay::Themes { selected, .. } => themes_view(app, *selected, area),
+        Overlay::Agents { key, selected } => agents_view(app, key, *selected, area),
         Overlay::Launch(w) => launch_view(app, w, area),
         Overlay::Palette { query, selected } => {
             let rect = centered(area, 72, area.h.saturating_sub(4).clamp(6, 24));
@@ -732,6 +733,79 @@ fn question_step(
 }
 
 /// The theme picker: every theme with a strip of its colours.
+/// ```text
+/// ╭ agents ────────────────────────────────────────────────╮
+/// │ ❯ main         fix the flaky test               42 items │
+/// │   ⠋ Explore    find where the config is parsed  14 items │
+/// │   ✔ Plan       design the loader                 6 items │
+/// ╰─────────────────────────── j/k move · enter view · esc ─╯
+/// ```
+fn agents_view(app: &App, key: &crate::slot::SessionKey, selected: usize, area: Rect) -> OverlayView {
+    use acc_core::transcript::ItemStatus;
+    let theme = app.theme;
+    let muted = Style::new().fg(theme.muted);
+    let rect = centered(area, 80, area.h.saturating_sub(4).clamp(6, 30));
+    let inner = rect.inner();
+    let w = inner.w as usize;
+    let slot = app.slots.iter().find(|s| &s.key == key);
+    let rows = slot
+        .and_then(|s| s.session.as_ref())
+        .map(crate::overlay::agent_rows)
+        .unwrap_or_default();
+    let shown = slot.and_then(|s| s.scope());
+    let spin = spinner(app.now_ms);
+    let name_w = rows
+        .iter()
+        .map(|r| crate::wrap::width(&r.name) + 2 * r.depth)
+        .max()
+        .unwrap_or(4)
+        .min(24);
+    let mut lines = Vec::new();
+    for (i, r) in rows.iter().enumerate() {
+        let chosen = i == selected;
+        let (glyph, tone) = match r.status {
+            None => ("◆", theme.accent),
+            Some(ItemStatus::Running) => (spin, theme.thinking),
+            Some(ItemStatus::Completed) => ("✔", theme.done),
+            Some(ItemStatus::Failed) => ("✖", theme.error),
+        };
+        let name_style = if chosen {
+            Style::new().fg(theme.accent).bold()
+        } else if r.id.as_deref() == shown {
+            Style::new().bold()
+        } else {
+            Style::new()
+        };
+        let indent = "  ".repeat(r.depth.saturating_sub(1));
+        let count = format!("{} items", r.items);
+        let mut l = Line::new(vec![
+            Span::new(
+                if chosen { "❯ " } else { "  " },
+                Style::new().fg(theme.accent).bold(),
+            ),
+            Span::raw(indent.clone()),
+            Span::new(format!("{glyph} "), Style::new().fg(tone)),
+            Span::new(fit(&r.name, name_w.saturating_sub(indent.len()) + 1), name_style),
+            Span::raw(" "),
+        ]);
+        let room = w.saturating_sub(l.width() + count.len() + 2);
+        l.push(Span::new(fit(&truncate(r.description.trim(), room), room), muted));
+        l.push(Span::raw("  "));
+        l.push(Span::new(count, muted));
+        lines.push(l);
+    }
+    let room = inner.h as usize;
+    let start = selected.saturating_sub(room.saturating_sub(1));
+    OverlayView {
+        rect,
+        title: "agents".into(),
+        lines: lines.into_iter().skip(start).take(room).collect(),
+        footer: Some(Line::styled("j/k move · enter view · esc close", muted)),
+        cursor: None,
+        tone: None,
+    }
+}
+
 fn themes_view(app: &App, selected: usize, area: Rect) -> OverlayView {
     let theme = app.theme;
     let muted = Style::new().fg(theme.muted);

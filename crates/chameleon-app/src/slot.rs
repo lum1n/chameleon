@@ -72,6 +72,16 @@ impl Default for Scroll {
     }
 }
 
+/// A subagent opened in the transcript, over the view it was opened from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Frame {
+    /// The subagent's item; its children are what the transcript shows.
+    pub id: ItemId,
+    /// The cursor and scroll of the view underneath, for going back.
+    pub cursor: Option<usize>,
+    pub scroll: Scroll,
+}
+
 /// Urgency for sorting: lower sorts first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Urgency {
@@ -98,6 +108,9 @@ pub struct Slot {
     pub last_live_ms: u64,
     pub expanded: HashSet<ItemId>,
     pub scroll: Scroll,
+    /// Subagents opened in the transcript, innermost last; empty shows the
+    /// main conversation.
+    pub view: Vec<Frame>,
     /// Item under the transcript cursor, when navigating items.
     pub cursor: Option<usize>,
     /// Bumped on every change to an item, for the wrap cache.
@@ -132,6 +145,7 @@ impl Slot {
             last_live_ms: 0,
             expanded: HashSet::new(),
             scroll: Scroll::default(),
+            view: Vec::new(),
             cursor: None,
             revisions: HashMap::new(),
             wrap: WrapCache::new(),
@@ -198,7 +212,8 @@ impl Slot {
         match self.run_state() {
             Some(RunState::Blocked { .. }) => Urgency::Blocked,
             Some(RunState::Error) => Urgency::Error,
-            Some(RunState::Working { .. }) => Urgency::Working,
+            // Background agents still run; another turn follows on its own.
+            Some(RunState::Working { .. } | RunState::Waiting) => Urgency::Working,
             Some(RunState::Idle) => Urgency::Idle,
             Some(RunState::Done) => Urgency::Done,
             Some(RunState::Exited) => Urgency::Exited,
@@ -246,6 +261,7 @@ impl Slot {
                     ("…", "thinking")
                 }
             }
+            Some(RunState::Waiting) => ("◌", "waiting"),
             Some(RunState::Idle) => ("·", "idle"),
             Some(RunState::Done) => ("✓", "done"),
             Some(RunState::Exited) => ("·", "exited"),
@@ -261,6 +277,63 @@ impl Slot {
                 },
             },
         }
+    }
+
+    /// The subagent whose conversation the transcript shows, `None` for main.
+    pub fn scope(&self) -> Option<&str> {
+        self.view.last().map(|f| f.id.as_str())
+    }
+
+    /// Shows subagent `id`'s conversation, from its newest line.
+    pub fn open_agent(&mut self, id: ItemId) {
+        self.view.push(Frame {
+            id,
+            cursor: self.cursor.take(),
+            scroll: std::mem::take(&mut self.scroll),
+        });
+    }
+
+    /// Back to the view a subagent was opened from; false when at main.
+    pub fn close_agent(&mut self) -> bool {
+        let Some(f) = self.view.pop() else {
+            return false;
+        };
+        self.cursor = f.cursor;
+        self.scroll = f.scroll;
+        true
+    }
+
+    /// Shows subagent `id` (`None`: main) wherever the view is now. Going
+    /// back from it lands on the step of each subagent on the way.
+    pub fn go_to_agent(&mut self, id: Option<&str>) {
+        let Some(session) = &self.session else {
+            return;
+        };
+        let items = session.transcript().items();
+        let mut chain = Vec::new();
+        let mut at = id;
+        while let Some(cur) = at {
+            let Some(idx) = items.iter().position(|it| it.id == cur) else {
+                break;
+            };
+            chain.push(idx);
+            at = items[idx].parent.as_deref();
+        }
+        chain.reverse();
+        self.view = chain
+            .iter()
+            .map(|&idx| Frame {
+                id: items[idx].id.clone(),
+                cursor: Some(idx),
+                scroll: Scroll {
+                    follow: false,
+                    from_bottom: 0,
+                    to_cursor: true,
+                },
+            })
+            .collect();
+        self.cursor = None;
+        self.scroll = Scroll::default();
     }
 
     pub fn bump(&mut self, id: &str) {

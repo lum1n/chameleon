@@ -107,6 +107,12 @@ pub enum Overlay {
         /// Text typed for an action that asks for it.
         input: Option<String>,
     },
+    /// Main and the session's subagent runs, to pick which one to view.
+    Agents {
+        key: SessionKey,
+        /// Index into [`agent_rows`].
+        selected: usize,
+    },
     /// The theme picker; moving previews, esc puts `original` back.
     Themes {
         /// Index into [`App::theme_choices`], after the terminal entry (0).
@@ -173,6 +179,21 @@ impl Overlay {
             })
             .map_or(0, |i| i + 1);
         Overlay::Themes { selected, original }
+    }
+
+    /// The agents picker on the conversation shown; `None` without subagents.
+    pub fn agents(slot: &crate::slot::Slot) -> Option<Self> {
+        let session = slot.session.as_ref()?;
+        let rows = agent_rows(session);
+        if rows.len() < 2 {
+            return None;
+        }
+        let scope = slot.scope();
+        let selected = rows.iter().position(|r| r.id.as_deref() == scope).unwrap_or(0);
+        Some(Overlay::Agents {
+            key: slot.key.clone(),
+            selected,
+        })
     }
 
     pub fn options(key: SessionKey) -> Self {
@@ -867,6 +888,32 @@ impl App {
                     self.apply_theme(name.as_deref());
                 }
             }
+            Overlay::Agents { key: skey, selected } => {
+                let rows = self
+                    .slot_mut(skey)
+                    .and_then(|s| s.session.as_ref().map(agent_rows))
+                    .unwrap_or_default();
+                let n = rows.len().max(1);
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('a') => keep = false,
+                    KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => *selected = (*selected + 1) % n,
+                    KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => {
+                        *selected = (*selected + n - 1) % n
+                    }
+                    KeyCode::Home | KeyCode::Char('g') => *selected = 0,
+                    KeyCode::End | KeyCode::Char('G') => *selected = n - 1,
+                    KeyCode::Enter => {
+                        keep = false;
+                        let id = rows.get(*selected).and_then(|r| r.id.clone());
+                        let skey = skey.clone();
+                        if let Some(s) = self.slot_mut(&skey) {
+                            s.go_to_agent(id.as_deref());
+                        }
+                        self.focus = crate::model::Pane::Transcript;
+                    }
+                    _ => {}
+                }
+            }
             Overlay::Diff { scroll, .. } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('d') => keep = false,
                 KeyCode::Down | KeyCode::Char('j') => *scroll += 1,
@@ -1137,6 +1184,60 @@ pub fn option_label(id: OptionId) -> &'static str {
 }
 
 /// The file changes of an item, for the diff overlay.
+/// One line of the agents picker: main (`id: None`) or a subagent run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRow {
+    pub id: Option<String>,
+    /// Subagents a run sits inside of.
+    pub depth: usize,
+    pub name: String,
+    pub description: String,
+    pub status: Option<acc_core::transcript::ItemStatus>,
+    /// Items in its conversation.
+    pub items: usize,
+}
+
+/// Every subagent run in the session, in the order they started.
+pub fn agent_ids(session: &acc_core::session::Session) -> Vec<String> {
+    session.transcript().subagents().map(|it| it.id.clone()).collect()
+}
+
+/// Main, then every subagent run, nested under the one it ran in.
+pub fn agent_rows(session: &acc_core::session::Session) -> Vec<AgentRow> {
+    let t = session.transcript();
+    let harness = session.spec().harness;
+    let count = |id: Option<&str>| t.items().iter().filter(|it| it.parent.as_deref() == id).count();
+    let mut rows = vec![AgentRow {
+        id: None,
+        depth: 0,
+        name: "main".into(),
+        description: session.spec().title.clone().unwrap_or_default(),
+        status: None,
+        items: count(None),
+    }];
+    for item in t.subagents() {
+        let mut depth = 1;
+        let mut at = item.parent.as_deref();
+        while let Some(p) = at.and_then(|p| t.get(p)) {
+            depth += 1;
+            at = p.parent.as_deref();
+        }
+        let description = match item.detail(harness) {
+            ItemDetail::Subagent { description, .. } => description,
+            _ => String::new(),
+        };
+        rows.push(AgentRow {
+            id: Some(item.id.clone()),
+            depth,
+            name: crate::view::transcript::agent_name(item, harness),
+            description,
+            status: Some(item.status),
+            items: count(Some(&item.id)),
+        });
+    }
+    rows
+}
+
 pub fn file_changes(detail: &ItemDetail) -> Option<&[acc_core::item::FileDiff]> {
     match detail {
         ItemDetail::FileChange { files } => Some(files),

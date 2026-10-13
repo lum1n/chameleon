@@ -604,8 +604,19 @@ impl App {
                 self.focus = Pane::Composer;
                 Vec::new()
             }
-            Action::Open => self.open_selected(),
+            Action::Open => match self.agent_under_cursor() {
+                Some(id) if self.focus == Pane::Transcript => {
+                    if let Some(s) = self.selected_slot_mut() {
+                        s.open_agent(id);
+                    }
+                    Vec::new()
+                }
+                _ => self.open_selected(),
+            },
             Action::Back => {
+                if self.focus == Pane::Transcript && self.selected_slot_mut().is_some_and(Slot::close_agent) {
+                    return Vec::new();
+                }
                 self.focus = match self.focus {
                     Pane::Composer if self.composer.is_empty() => Pane::Transcript,
                     Pane::Composer => Pane::Composer,
@@ -675,6 +686,18 @@ impl App {
                 } else {
                     self.toast("no file changes in this session", false);
                 }
+                Vec::new()
+            }
+            Action::Agents => {
+                match self.selected().and_then(Overlay::agents) {
+                    Some(o) => self.overlay = Some(o),
+                    None => self.toast("no subagents in this session", false),
+                }
+                Vec::new()
+            }
+            Action::NextAgent | Action::PrevAgent => {
+                self.cycle_agent(action == Action::NextAgent);
+                self.focus = Pane::Transcript;
                 Vec::new()
             }
             Action::Approve | Action::Deny => self.quick_answer(action == Action::Approve),
@@ -749,33 +772,60 @@ impl App {
         self.slot_mut(&key)
     }
 
-    /// Moves the transcript's item cursor, skipping a folded subagent's
-    /// hidden children.
+    /// Moves the transcript's item cursor within the conversation shown;
+    /// with no cursor yet, it starts on the newest item.
     fn cursor_move(&mut self, down: bool) {
         if let Some(s) = self.selected_slot_mut()
             && let Some(session) = &s.session
         {
             let items = session.transcript().items();
-            if items.is_empty() {
-                return;
-            }
-            let n = items.len();
-            let mut c = match (s.cursor, down) {
-                (None, _) => n - 1,
-                (Some(c), true) => (c + 1).min(n - 1),
-                (Some(c), false) => c.saturating_sub(1),
+            let scope = s.view.last().map(|f| f.id.as_str());
+            let shown = |i: &usize| !crate::view::transcript::hidden(&items[*i], scope);
+            let next = match s.cursor.filter(|c| *c < items.len()) {
+                None => (0..items.len()).rev().find(shown),
+                Some(c) if down => (c + 1..items.len()).find(shown).or(Some(c)),
+                Some(c) => (0..c).rev().find(shown).or(Some(c)),
             };
-            while crate::view::transcript::hidden(&items[c], &s.expanded) {
-                let next = if down { c + 1 } else { c.saturating_sub(1) };
-                if next == c {
-                    break;
-                }
-                c = next;
-            }
+            let Some(c) = next.filter(shown) else {
+                return;
+            };
             s.cursor = Some(c);
             s.scroll.follow = false;
             s.scroll.to_cursor = true;
         }
+    }
+
+    /// The subagent run under the transcript cursor, if it has a
+    /// conversation to open.
+    fn agent_under_cursor(&self) -> Option<String> {
+        let s = self.selected()?;
+        let items = s.session.as_ref()?.transcript().items();
+        let item = items.get(s.cursor?)?;
+        (item.kind == acc_core::event::ItemKind::Subagent
+            && items.iter().any(|it| it.parent.as_ref() == Some(&item.id)))
+        .then(|| item.id.clone())
+    }
+
+    /// Steps to the previous or next conversation, main first, then each
+    /// subagent run in the order they started.
+    fn cycle_agent(&mut self, forward: bool) {
+        let Some(s) = self.selected_slot_mut() else {
+            return;
+        };
+        let Some(session) = &s.session else {
+            return;
+        };
+        let mut order: Vec<Option<String>> = vec![None];
+        order.extend(crate::overlay::agent_ids(session).into_iter().map(Some));
+        if order.len() == 1 {
+            self.toast("no subagents in this session", false);
+            return;
+        }
+        let cur = s.scope().map(str::to_owned);
+        let i = order.iter().position(|o| *o == cur).unwrap_or(0);
+        let n = order.len();
+        let next = if forward { (i + 1) % n } else { (i + n - 1) % n };
+        s.go_to_agent(order[next].as_deref());
     }
 
     fn scroll_lines(&mut self, delta: i64) {
@@ -836,7 +886,8 @@ impl App {
         let text = self.composer.take();
         self.focus = Pane::Transcript;
         if let Some(s) = self.slot_mut(&key) {
-            s.scroll = Default::default();
+            // The prompt goes to the main agent; show it there.
+            s.go_to_agent(None);
         }
         self.send(
             &key,

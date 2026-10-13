@@ -3,6 +3,9 @@
 //! ```text
 //! cargo run -p chameleon-app --example replay -- <harness> <out.ndjson> [width] [height]
 //! ```
+//!
+//! `REPLAY_KEYS` types keys before rendering, space-separated as in the
+//! config (`REPLAY_KEYS="alt-2 k k enter"`); an open overlay is printed too.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -89,7 +92,21 @@ fn main() {
     for i in session.transcript().items() {
         eprintln!("  {:?} {:?} {} chars", i.kind, i.status, i.text.len());
     }
+    for k in std::env::var("REPLAY_KEYS")
+        .unwrap_or_default()
+        .split_whitespace()
+    {
+        let key = chameleon_app::keymap::Key::parse(k).expect("a key");
+        app.handle(AppEvent::Key(key), 4);
+    }
     let screen = app.screen();
+    if let Some(o) = &screen.overlay {
+        println!("[{}]", o.title);
+        for l in &o.lines {
+            println!("{}", l.text());
+        }
+        println!("[{}]", o.footer.as_ref().map(|f| f.text()).unwrap_or_default());
+    }
     println!("{}", screen.header.text());
     println!("{}", "─".repeat(width as usize));
     for l in &screen.transcript.lines {

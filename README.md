@@ -56,6 +56,8 @@ Rust 1.88 or newer. The optional Lua runtime needs `--features lua`.
 | `y` / `N` | approve or deny the open request (`N` opens the card with the denial selected) |
 | `o` | model, effort, mode, permission (as the harness reports them) |
 | `space` | expand or collapse the item under the cursor (reasoning, output, diffs) |
+| `enter` / `esc` | on a subagent step, open its conversation; `esc` goes back to where you were |
+| `[` `]` / `a` | step through main and every subagent run / pick one from a list, running ones spinning |
 | `d` | the latest file change as a diff |
 | `ctrl-c` `c` `f` | interrupt, compact, fork |
 | `x` / `D` | stop the harness / stop and delete the session |

@@ -1,11 +1,11 @@
 //! The conversation pane: items rendered through `ItemDetail`, wrapped and
 //! cached per item, windowed to the visible lines.
 //!
-//! A subagent's child conversation is folded into its [`ItemKind::Subagent`]
-//! item: hidden until that item is expanded, then rendered inline and
-//! indented, same as the rest of the transcript.
+//! The pane shows one conversation at a time: the main one, or a
+//! subagent's (the children of its [`ItemKind::Subagent`] item) once it is
+//! opened, under a breadcrumb back to main.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use acc_core::Harness;
 use acc_core::event::ItemKind;
@@ -59,18 +59,25 @@ pub fn build(app: &mut App, rect: Rect) -> PaneView {
     };
     let items = session.transcript().items();
     let cursor = slot.cursor.filter(|c| *c < items.len());
-    // Ids with at least one child in the transcript: a running or finished
-    // subagent, foldable open.
-    let parents: HashSet<&str> = items.iter().filter_map(|it| it.parent.as_deref()).collect();
+    let scope = slot.scope().map(str::to_owned);
+    let scope = scope.as_deref();
+    // How many items each subagent's conversation has so far.
+    let mut children: HashMap<&str, usize> = HashMap::new();
+    for p in items.iter().filter_map(|it| it.parent.as_deref()) {
+        *children.entry(p).or_default() += 1;
+    }
+    let header = scope
+        .map(|id| agent_header(items, id, ctx.harness, &theme, spin, w))
+        .unwrap_or_default();
+    let h = h.saturating_sub(header.len());
 
-    // Heights of every item (cached), then the window. A subagent's child
-    // conversation contributes nothing while folded: its items stay in the
-    // flat list (so the cursor and scroll math need no second indexing
-    // scheme) but render to zero lines.
+    // Heights of every item (cached), then the window. Items of other
+    // conversations stay in the flat list (so the cursor and scroll math
+    // need no second indexing scheme) but render to zero lines.
     let mut heights = Vec::with_capacity(items.len());
     let mut total = 0usize;
     for (idx, item) in items.iter().enumerate() {
-        if hidden(item, &slot.expanded) {
+        if hidden(item, scope) {
             heights.push(0);
             continue;
         }
@@ -79,14 +86,16 @@ pub fn build(app: &mut App, rect: Rect) -> PaneView {
             expanded: slot.expanded.contains(&item.id),
             selected: cursor == Some(idx),
             // Steps of one turn (thinking, tools) stack without gaps.
-            gap: !(is_step(item) && next_visible(items, &slot.expanded, idx).is_some_and(is_step)),
-            children: parents.contains(item.id.as_str()),
+            gap: !(is_step(item) && next_visible(items, scope, idx).is_some_and(is_step)),
+            children: children.get(item.id.as_str()).copied().unwrap_or(0),
         };
-        let rev = rev.wrapping_mul(16)
-            + u64::from(look.gap) * 8
-            + u64::from(look.expanded) * 4
-            + u64::from(look.selected) * 2
-            + u64::from(look.children);
+        let rev = rev
+            .wrapping_mul(1 << 20)
+            .wrapping_add(look.children as u64)
+            .wrapping_mul(8)
+            + u64::from(look.gap) * 4
+            + u64::from(look.expanded) * 2
+            + u64::from(look.selected);
         let cacheable = item.status != ItemStatus::Running;
         let n = slot
             .wrap
@@ -126,12 +135,12 @@ pub fn build(app: &mut App, rect: Rect) -> PaneView {
     let start = total.saturating_sub(h + slot.scroll.from_bottom);
     let end = (start + h).min(total);
 
-    let mut lines = Vec::with_capacity(h);
+    let mut lines = header;
     let mut pos = 0usize;
     for (idx, item) in items.iter().enumerate() {
         let n = heights[idx];
-        // Folded: not rendered this pass, so its cache entry (if any, from
-        // when it was last expanded) is stale and must not be read.
+        // Another conversation's: not rendered this pass, so its cache
+        // entry (if any, from when it was last shown) is stale.
         if n == 0 {
             continue;
         }
@@ -169,8 +178,10 @@ pub fn build(app: &mut App, rect: Rect) -> PaneView {
         slot.scroll.follow,
         slot.scroll.from_bottom
     );
-    if items.is_empty() && lines.is_empty() {
-        let hint = if session.is_alive() {
+    if total == 0 {
+        let hint = if scope.is_some() {
+            "nothing from this agent yet"
+        } else if session.is_alive() {
             "say something below"
         } else {
             "nothing recorded"
@@ -183,9 +194,9 @@ pub fn build(app: &mut App, rect: Rect) -> PaneView {
         focused,
         cursor: None,
         scrollbar: (total > h).then_some(Scrollbar {
-            total,
+            total: total + rect.h as usize - h,
             offset: start,
-            visible: h,
+            visible: rect.h as usize,
         }),
         hits: Vec::new(),
     }
@@ -399,8 +410,8 @@ pub struct Look {
     pub selected: bool,
     /// A blank line after the item.
     pub gap: bool,
-    /// A subagent run with a child conversation to fold open.
-    pub children: bool,
+    /// Items in the conversation of a subagent run, to open.
+    pub children: usize,
 }
 
 /// Thinking and tool calls: the steps between messages.
@@ -408,14 +419,93 @@ fn is_step(item: &Item) -> bool {
     !matches!(item.kind, ItemKind::UserMessage | ItemKind::AgentMessage)
 }
 
-/// A subagent's child, folded under its still-collapsed parent.
-pub(crate) fn hidden(item: &Item, expanded: &HashSet<acc_core::event::ItemId>) -> bool {
-    item.parent.as_deref().is_some_and(|p| !expanded.contains(p))
+/// Not part of the conversation shown: `scope` is the open subagent's id,
+/// `None` for the main conversation.
+pub(crate) fn hidden(item: &Item, scope: Option<&str>) -> bool {
+    item.parent.as_deref() != scope
 }
 
-/// The next item that isn't folded away, for gap and layout decisions.
-fn next_visible<'a>(items: &'a [Item], expanded: &HashSet<acc_core::event::ItemId>, idx: usize) -> Option<&'a Item> {
-    items[idx + 1..].iter().find(|it| !hidden(it, expanded))
+/// The next item of the conversation shown, for gap and layout decisions.
+fn next_visible<'a>(items: &'a [Item], scope: Option<&str>, idx: usize) -> Option<&'a Item> {
+    items[idx + 1..].iter().find(|it| !hidden(it, scope))
+}
+
+/// The breadcrumb over a subagent's conversation:
+///
+/// ```text
+/// main › Explore › general-purpose                     ⠋ running · 14 items
+/// find where the config is loaded and parsed
+/// ─────────────────────────────────────────────── esc back · [ ] prev/next
+/// ```
+fn agent_header(
+    items: &[Item],
+    id: &str,
+    harness: Harness,
+    theme: &Theme,
+    spin: &str,
+    w: usize,
+) -> Vec<Line> {
+    let muted = Style::new().fg(theme.muted);
+    let mut chain = Vec::new();
+    let mut at = Some(id);
+    while let Some(cur) = at {
+        let Some(item) = items.iter().find(|it| it.id == cur) else {
+            break;
+        };
+        chain.push(item);
+        at = item.parent.as_deref();
+    }
+    chain.reverse();
+    let Some(last) = chain.last() else {
+        return Vec::new();
+    };
+    let mut crumbs = Line::new(vec![Span::new("main", muted)]);
+    for (i, item) in chain.iter().enumerate() {
+        crumbs.push(Span::new(" › ", muted));
+        let style = if i + 1 == chain.len() {
+            Style::new().fg(theme.accent).bold()
+        } else {
+            muted
+        };
+        crumbs.push(Span::new(agent_name(item, harness), style));
+    }
+    let n = items.iter().filter(|it| it.parent.as_deref() == Some(id)).count();
+    let (glyph, word, tone) = match last.status {
+        ItemStatus::Running => (spin, "running", theme.thinking),
+        ItemStatus::Completed => ("✔", "done", theme.done),
+        ItemStatus::Failed => ("✖", "failed", theme.error),
+    };
+    let meta = vec![
+        Span::new(format!("{glyph} {word}"), Style::new().fg(tone)),
+        Span::new(format!(" · {n} items"), muted),
+    ];
+    let meta_w: usize = meta.iter().map(|s| width(&s.text)).sum();
+    let mut top = clip(&crumbs, w.saturating_sub(meta_w + 2));
+    top.push(Span::raw(" ".repeat(w.saturating_sub(top.width() + meta_w))));
+    top.spans.extend(meta);
+    let mut out = vec![top];
+    if let ItemDetail::Subagent { description, .. } = last.detail(harness)
+        && !description.trim().is_empty()
+    {
+        out.push(Line::styled(
+            truncate(description.trim(), w),
+            Style::new().fg(theme.agent),
+        ));
+    }
+    let keys = " esc back · [ ] prev/next · a agents";
+    out.push(Line::new(vec![
+        Span::new("─".repeat(w.saturating_sub(width(keys))), muted),
+        Span::new(keys, muted),
+    ]));
+    out
+}
+
+/// A subagent run's name: its agent type, or "Task".
+pub(crate) fn agent_name(item: &Item, harness: Harness) -> String {
+    match item.detail(harness) {
+        ItemDetail::Subagent { agent: Some(a), .. } if !a.is_empty() => a,
+        _ => "Task".to_owned(),
+    }
 }
 
 /// Output lines shown under a failed or running step.
@@ -436,9 +526,8 @@ const TAIL: usize = 3;
 /// ```
 pub fn render_item(item: &Item, look: Look, ctx: &ItemCtx) -> Vec<Line> {
     let theme = ctx.theme;
-    // Subagent children are indented; the cursor's item gets a marker.
-    let indent = if item.parent.is_some() { 2 } else { 0 };
-    let cw = ctx.w.saturating_sub(indent + usize::from(look.selected)).max(8);
+    // The cursor's item gets a marker.
+    let cw = ctx.w.saturating_sub(usize::from(look.selected)).max(8);
     let muted = Style::new().fg(theme.muted);
     let mut out: Vec<Line> = Vec::new();
     match item.kind {
@@ -487,9 +576,6 @@ pub fn render_item(item: &Item, look: Look, ctx: &ItemCtx) -> Vec<Line> {
         }
     }
     for l in &mut out {
-        if indent > 0 {
-            l.spans.insert(0, Span::raw(" ".repeat(indent)));
-        }
         if look.selected {
             l.spans.insert(0, Span::new("▌", Style::new().fg(theme.accent)));
         }
@@ -646,21 +732,19 @@ fn step(item: &Item, look: Look, ctx: &ItemCtx, cw: usize) -> Vec<Line> {
         } => {
             let bad = failed(None);
             let output = output.unwrap_or_default();
-            let meta = if item.status == ItemStatus::Running {
-                Vec::new()
-            } else {
-                count(&output, muted)
+            let mut meta = match look.children {
+                0 => Vec::new(),
+                1 => vec![Span::new("1 item", muted)],
+                n => vec![Span::new(format!("{n} items"), muted)],
             };
-            let label = agent.unwrap_or_else(|| "Task".to_owned());
+            if look.selected && look.children > 0 {
+                meta.push(Span::new("  ⏎ open", Style::new().fg(theme.accent)));
+            }
+            let label = agent
+                .filter(|a| !a.is_empty())
+                .unwrap_or_else(|| "Task".to_owned());
             let head = Line::new(vec![glyph(bad), name(&label), Span::new(description, muted)]);
-            out.extend(head_line(
-                head,
-                meta,
-                look,
-                has_more(&output) || look.children,
-                cw,
-                muted,
-            ));
+            out.extend(head_line(head, meta, look, has_more(&output), cw, muted));
             out.extend(output_lines(&output, look, bad, item.status, ctx, cw));
         }
     }
