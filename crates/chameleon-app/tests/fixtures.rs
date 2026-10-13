@@ -870,3 +870,36 @@ fn a_missing_argument_is_reported_not_sent() {
     assert!(a.overlay().is_none());
     assert!(format!("{:?}", a.screen()).contains("MCP server name"));
 }
+
+#[test]
+fn a_feed_stuck_behind_the_log_is_restarted_once() {
+    let mut a = app();
+    let key = claude_ready(&mut a);
+    let spec = a.selected().unwrap().spec.to_json();
+    let fed = CLAUDE_HI.len() as u64 + u64::from(!CLAUDE_HI.ends_with('\n'));
+    let list = |size: u64| {
+        let r = ok(&format!("S\t{}\talive 1 {size}\t1700000000\nJ\t{spec}\n", key.id));
+        AppEvent::ExecDone {
+            host: key.host.clone(),
+            tag: ExecTag::List,
+            result: r,
+        }
+    };
+    let refed = |fx: &[Effect]| fx.iter().any(|e| matches!(e, Effect::Refeed { .. }));
+
+    // Caught up: nothing to do.
+    assert!(!refed(&a.handle(list(fed), 10)));
+    // Behind once may just be a listing racing the feed.
+    assert!(!refed(&a.handle(list(fed + 500), 20)));
+    // Still at the same offset a listing later: the feed has stalled.
+    assert!(refed(&a.handle(list(fed + 900), 30)));
+    // Not again for the same offset (a log ending mid-line stays "behind").
+    assert!(!refed(&a.handle(list(fed + 900), 40)));
+    assert!(!refed(&a.handle(list(fed + 900), 50)));
+
+    // Lines arrive, then it sticks at the new offset: restarted again.
+    feed(&mut a, &key, r#"{"type":"keep_alive"}"#, 60);
+    let fed = fed + r#"{"type":"keep_alive"}"#.len() as u64 + 1;
+    assert!(!refed(&a.handle(list(fed + 10), 70)));
+    assert!(refed(&a.handle(list(fed + 10), 80)));
+}

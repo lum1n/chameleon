@@ -377,6 +377,7 @@ impl App {
         let listings = parse_list(&text);
         let mut seen = Vec::new();
         let mut out = Vec::new();
+        let mut refeed = false;
         for l in listings {
             let Some(spec) = l.spec_json.as_deref().and_then(SessionSpec::from_json) else {
                 continue;
@@ -399,6 +400,9 @@ impl App {
                 slot.spec.title = spec.title;
             }
             let alive = matches!(l.status, Status::Alive { .. });
+            if alive && slot.phase == Phase::Live {
+                refeed |= slot.check_stalled(l.status.size());
+            }
             if slot.session.is_some() && !alive && slot.is_alive() && slot.phase == Phase::Live {
                 // The listing says it's gone but we never saw the exit file.
                 if let Some(exec) = slot.session.as_ref().map(|s| s.status_exec()) {
@@ -409,6 +413,9 @@ impl App {
             if alive && slot.session.is_none() && self.cfg.general.auto_attach {
                 out.extend(self.attach(i));
             }
+        }
+        if refeed {
+            out.push(Effect::Refeed { host: host.clone() });
         }
         // Sessions removed on the host disappear here too, unless still starting.
         self.slots

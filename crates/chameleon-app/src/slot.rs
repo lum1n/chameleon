@@ -105,6 +105,10 @@ pub struct Slot {
     pub wrap: WrapCache,
     /// Unfollow the log at this time (exited; the tail has caught up).
     pub unfollow_at_ms: Option<u64>,
+    /// Our log offset when a listing last found the log longer than that.
+    pub behind_at: Option<u64>,
+    /// The offset the feed was last restarted at for being stuck there.
+    pub refed_at: Option<u64>,
     /// Stop this session once the launch of its replacement succeeds.
     pub kill_after_launch: Option<String>,
     /// A problem with the last script run for this session.
@@ -132,6 +136,8 @@ impl Slot {
             revisions: HashMap::new(),
             wrap: WrapCache::new(),
             unfollow_at_ms: None,
+            behind_at: None,
+            refed_at: None,
             kill_after_launch: None,
             error: None,
             log_size: None,
@@ -153,6 +159,25 @@ impl Slot {
             .filter(|s| !s.is_empty())
             .unwrap_or(cwd)
             .to_owned()
+    }
+
+    /// Weighs a listing's log size against what the feed has delivered: true
+    /// when two listings in a row found us stuck behind at the same offset,
+    /// once per offset so a log that ends mid-line can't restart it forever.
+    pub fn check_stalled(&mut self, size: u64) -> bool {
+        let Some(offset) = self.session.as_ref().map(Session::offset) else {
+            return false;
+        };
+        if offset >= size {
+            self.behind_at = None;
+            return false;
+        }
+        let stuck = self.behind_at == Some(offset) && self.refed_at != Some(offset);
+        self.behind_at = Some(offset);
+        if stuck {
+            self.refed_at = Some(offset);
+        }
+        stuck
     }
 
     pub fn is_alive(&self) -> bool {

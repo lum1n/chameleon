@@ -212,6 +212,12 @@ impl Runtime {
                         f.unfollow(&key);
                     }
                 }
+                Effect::Refeed { host } => {
+                    if let Some(f) = self.feeds.get(&host) {
+                        log::info!("feed for {host} stalled; restarting it");
+                        f.refeed();
+                    }
+                }
                 Effect::SaveTheme { name } => {
                     if let Err(e) = crate::save_theme(name.as_deref()) {
                         let _ = self.tx.send(AppEvent::Notice {

@@ -124,6 +124,10 @@ pub enum Effect {
         host: HostId,
         key: String,
     },
+    /// Restart a host's follower from what was already read; it has stalled.
+    Refeed {
+        host: HostId,
+    },
     /// Run a hook command locally with the payload on stdin.
     Hook {
         name: String,

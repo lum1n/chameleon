@@ -69,6 +69,11 @@ impl Feed {
         self.schedule(COALESCE);
     }
 
+    /// Restarts the follower now, resuming every file where it was.
+    pub fn refeed(&self) {
+        self.schedule(Duration::ZERO);
+    }
+
     fn schedule(&self, delay: Duration) {
         let mut g = lock(&self.inner);
         if g.closed {

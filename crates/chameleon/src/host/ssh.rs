@@ -36,6 +36,12 @@ impl Host for SshHost {
             .arg("-o")
             .arg(format!("ConnectTimeout={}", self.connect_timeout_s.max(1)))
             .args(&self.args)
+            // Without these a dropped link (sleep, a network change) leaves the
+            // follower blocked on a read forever instead of failing and retrying.
+            .arg("-o")
+            .arg("ServerAliveInterval=15")
+            .arg("-o")
+            .arg("ServerAliveCountMax=3")
             .arg("--")
             .arg(&self.dest)
             .arg(format!("sh -c {}", acc_core::shell::quote(script)));
