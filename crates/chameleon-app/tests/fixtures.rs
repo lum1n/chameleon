@@ -1055,3 +1055,47 @@ fn the_diff_viewer_shows_the_repository_and_the_sessions_edits() {
             .any(|l| l.contains("git: not a git repository"))
     );
 }
+
+#[test]
+fn the_wizard_offers_the_models_a_session_reported() {
+    use chameleon_app::overlay::Overlay;
+    let mut a = app();
+    claude_ready(&mut a);
+    let models = a
+        .selected()
+        .unwrap()
+        .session
+        .as_ref()
+        .unwrap()
+        .options()
+        .iter()
+        .find(|o| o.id == acc_core::command::OptionId::Model)
+        .map(|o| o.values.clone())
+        .unwrap();
+    assert!(models.len() > 1, "{models:?}");
+    a.handle(ctrl('n'), 5);
+    a.handle(press(KeyCode::Down), 5); // model
+    a.handle(press(KeyCode::Right), 5);
+    a.handle(press(KeyCode::Right), 5);
+    let Some(Overlay::Launch(w)) = a.overlay() else {
+        panic!("expected the wizard");
+    };
+    assert_eq!(w.fields[1], models[1]);
+    a.handle(press(KeyCode::Left), 5);
+    let Some(Overlay::Launch(w)) = a.overlay() else {
+        panic!("expected the wizard");
+    };
+    assert_eq!(w.fields[1], models[0]);
+    let text = overlay_text(&mut a).join("\n");
+    assert!(text.contains("←/→") && text.contains(&models[0]), "{text}");
+
+    // Another harness has no models here, so the pick is dropped.
+    a.handle(press(KeyCode::Up), 5); // directory
+    a.handle(press(KeyCode::Up), 5); // harness
+    a.handle(press(KeyCode::Right), 5);
+    let Some(Overlay::Launch(w)) = a.overlay() else {
+        panic!("expected the wizard");
+    };
+    assert_ne!(w.harness, Harness::Claude);
+    assert!(w.fields[1].is_empty());
+}

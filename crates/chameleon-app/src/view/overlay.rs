@@ -881,6 +881,7 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
         .unwrap_or_default();
     let harnesses = app.wizard_harnesses(w.host);
     let probed = app.hosts.get(w.host).is_some_and(|h| h.probed);
+    let models = app.wizard_models(w.host, w.harness);
 
     let label = |field: usize, name: &str| -> Vec<Span> {
         if w.field == field {
@@ -972,6 +973,28 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
             ));
         }
         lines.push(l);
+        if field == 3 && focused && !models.is_empty() {
+            // Long lists show a window around the pick.
+            const SHOWN: usize = 8;
+            let at = models.iter().position(|m| m == value.trim());
+            let start = at
+                .map_or(0, |i| i.saturating_sub(SHOWN / 2))
+                .min(models.len().saturating_sub(SHOWN));
+            let end = (start + SHOWN).min(models.len());
+            let mut m = padded(Line::raw(" ".repeat(2 + LABEL)));
+            if start > 0 {
+                m.push(Span::new(format!("+{start} … "), muted));
+            }
+            for (i, model) in models.iter().enumerate().take(end).skip(start) {
+                m.push(chip(model, at == Some(i), false));
+                m.push(Span::raw(" "));
+            }
+            if end < models.len() {
+                m.push(Span::new(format!("… +{} ", models.len() - end), muted));
+            }
+            m.push(Span::new(" ←/→", muted));
+            lines.extend(wrap_hang(&m, width + PAD.len(), &hang));
+        }
         let modes = permission_modes(w.harness);
         if field == 4 && focused && !modes.is_empty() {
             let mut m = padded(Line::raw(" ".repeat(2 + LABEL)));

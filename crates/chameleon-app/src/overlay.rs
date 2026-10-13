@@ -288,6 +288,22 @@ pub fn permission_modes(h: Harness) -> &'static [&'static str] {
     }
 }
 
+/// The choice after (or before) `current`; the first (or last) when
+/// `current` isn't one of them.
+fn cycle<'a, T: AsRef<str>>(choices: &'a [T], current: &str, forward: bool) -> Option<&'a T> {
+    let n = choices.len();
+    if n == 0 {
+        return None;
+    }
+    let i = match choices.iter().position(|c| c.as_ref() == current) {
+        None if forward => 0,
+        None => n - 1,
+        Some(i) if forward => (i + 1) % n,
+        Some(i) => (i + n - 1) % n,
+    };
+    choices.get(i)
+}
+
 pub fn parse_harness(s: &str) -> Option<Harness> {
     let s = s.trim().to_ascii_lowercase();
     Harness::ALL
@@ -599,27 +615,28 @@ impl App {
                                 (i + n - 1) % n
                             };
                             if let Some(h) = list.get(j) {
-                                w.harness = *h;
+                                self.wizard_set_harness(w, *h);
+                            }
+                        }
+                        KeyCode::Left | KeyCode::Right if w.field == 3 => {
+                            let models = self.wizard_models(w.host, w.harness);
+                            if let Some(m) = cycle(&models, &w.fields[1], key.code == KeyCode::Right) {
+                                w.fields[1] = m.to_owned();
                             }
                         }
                         KeyCode::Left | KeyCode::Right
                             if w.field == 4 && !permission_modes(w.harness).is_empty() =>
                         {
                             let modes = permission_modes(w.harness);
-                            let n = modes.len();
-                            let next = match modes.iter().position(|m| *m == w.fields[2]) {
-                                None if key.code == KeyCode::Right => 0,
-                                None => n - 1,
-                                Some(i) if key.code == KeyCode::Right => (i + 1) % n,
-                                Some(i) => (i + n - 1) % n,
-                            };
-                            w.fields[2] = modes[next].to_owned();
+                            if let Some(m) = cycle(modes, &w.fields[2], key.code == KeyCode::Right) {
+                                w.fields[2] = (*m).to_owned();
+                            }
                         }
                         KeyCode::Char(' ') if w.field == 1 => {
                             let list = self.wizard_harnesses(w.host);
                             let i = list.iter().position(|h| *h == w.harness).unwrap_or(0);
                             if let Some(h) = list.get((i + 1) % list.len().max(1)) {
-                                w.harness = *h;
+                                self.wizard_set_harness(w, *h);
                             }
                         }
                         KeyCode::Backspace => {
@@ -648,7 +665,7 @@ impl App {
                                         .starts_with(c.to_ascii_lowercase())
                                 })
                             {
-                                w.harness = h;
+                                self.wizard_set_harness(w, h);
                             }
                         }
                         _ => {}
@@ -926,6 +943,38 @@ impl App {
         } else {
             probed
         }
+    }
+
+    /// The models `harness` reported in a session on the host, the selected
+    /// session's first. acc learns them from a running harness, so this is
+    /// empty until one has run there.
+    pub(crate) fn wizard_models(&self, host: usize, harness: Harness) -> Vec<String> {
+        let Some(name) = self.hosts.get(host).map(|h| h.cfg.name.as_str()) else {
+            return Vec::new();
+        };
+        let selected = self.selected();
+        selected
+            .into_iter()
+            .chain(&self.slots)
+            .filter(|s| s.key.host == name && s.harness() == harness)
+            .filter_map(|s| s.session.as_ref())
+            .filter_map(|s| s.options().iter().find(|o| o.id == OptionId::Model))
+            .map(|o| o.values.clone())
+            .find(|v| !v.is_empty())
+            .unwrap_or_default()
+    }
+
+    /// Switches the wizard's harness, dropping a model picked from the old
+    /// one's list that the new one doesn't offer.
+    fn wizard_set_harness(&self, w: &mut Wizard, h: Harness) {
+        let model = w.fields[1].trim();
+        if !model.is_empty()
+            && self.wizard_models(w.host, w.harness).iter().any(|m| m == model)
+            && !self.wizard_models(w.host, h).iter().any(|m| m == model)
+        {
+            w.fields[1].clear();
+        }
+        w.harness = h;
     }
 
     fn wizard_submit(&mut self, w: &mut Wizard) -> Vec<Effect> {
