@@ -58,7 +58,7 @@ Rust 1.88 or newer. The optional Lua runtime needs `--features lua`.
 | `space` | expand or collapse the item under the cursor (reasoning, output, diffs) |
 | `enter` / `esc` | on a subagent step, open its conversation; `esc` goes back to where you were |
 | `[` `]` / `a` | step through main and every subagent run / pick one from a list, running ones spinning |
-| `d` | the latest file change as a diff |
+| `d` | the diff viewer: the repository's uncommitted changes on the session's host (untracked files too), or with `s` every edit the agent made this session, merged per file. `n`/`p` file, `]`/`[` hunk, `r` reload. On an edit step it opens on that file |
 | `ctrl-c` `c` `f` | interrupt, compact, fork |
 | `x` / `D` | stop the harness / stop and delete the session |
 | `r` | re-list sessions on every host |

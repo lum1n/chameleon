@@ -16,6 +16,7 @@
 //! ```
 
 pub mod composer;
+pub mod diff;
 pub mod header;
 pub mod overlay;
 pub mod sidebar;

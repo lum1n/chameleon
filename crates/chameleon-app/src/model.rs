@@ -680,14 +680,7 @@ impl App {
                 }
                 Vec::new()
             }
-            Action::Diff => {
-                if let Some(o) = Overlay::diff_for(self) {
-                    self.overlay = Some(o);
-                } else {
-                    self.toast("no file changes in this session", false);
-                }
-                Vec::new()
-            }
+            Action::Diff => self.open_diff(),
             Action::Agents => {
                 match self.selected().and_then(Overlay::agents) {
                     Some(o) => self.overlay = Some(o),

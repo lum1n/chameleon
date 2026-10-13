@@ -284,7 +284,7 @@ impl Action {
             Action::Compact => "compact the context",
             Action::Fork => "fork the session",
             Action::Options => "model / effort / mode / permission",
-            Action::Diff => "show diffs",
+            Action::Diff => "diff: repository / session edits",
             Action::Approve => "approve the first request",
             Action::Deny => "deny the first request",
             Action::ToggleExpand => "expand / collapse item",

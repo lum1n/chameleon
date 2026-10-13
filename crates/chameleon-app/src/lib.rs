@@ -4,6 +4,7 @@
 
 pub mod composer;
 pub mod config;
+pub mod diff;
 pub mod event;
 pub mod hooks;
 pub mod keymap;

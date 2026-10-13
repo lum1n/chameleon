@@ -266,6 +266,10 @@ impl App {
                 }
             }
             ExecTag::SpecWrite(_) => Vec::new(),
+            ExecTag::GitDiff(id) => {
+                self.on_git_diff(&SessionKey::new(host, &id), outcome);
+                Vec::new()
+            }
         }
     }
 

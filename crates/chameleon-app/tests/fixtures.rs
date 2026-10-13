@@ -940,3 +940,118 @@ fn a_feed_stuck_behind_the_log_is_restarted_once() {
     assert!(!refed(&a.handle(list(fed + 10), 70)));
     assert!(refed(&a.handle(list(fed + 10), 80)));
 }
+
+/// Claude editing `/work/src/lib.rs`, as stream-json.
+const CLAUDE_EDIT: &str = concat!(
+    r#"{"type":"assistant","message":{"id":"m_e","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_e1","name":"Edit","input":{"file_path":"/work/src/lib.rs","old_string":"fn a() {}\nfn b() {}","new_string":"fn a() {}\nfn c() {}"}}]},"parent_tool_use_id":null,"session_id":"s"}"#,
+    "\n",
+    r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_e1","type":"tool_result","content":"ok","is_error":false}]},"parent_tool_use_id":null,"session_id":"s"}"#,
+    "\n",
+);
+
+const GIT_DIFF: &str = "diff --git a/src/lib.rs b/src/lib.rs\nindex 1..2 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -10,3 +10,3 @@\n fn a() {}\n-fn b() {}\n+fn c() {}\n x\n\
+diff --git a/notes.md b/notes.md\nnew file mode 100644\n--- /dev/null\n+++ b/notes.md\n@@ -0,0 +1,2 @@\n+# notes\n+todo\n";
+
+fn overlay_text(a: &mut App) -> Vec<String> {
+    a.screen()
+        .overlay
+        .map(|o| o.lines.iter().map(|l| l.text()).collect())
+        .unwrap_or_default()
+}
+
+fn diff_view(a: &App) -> &chameleon_app::diff::DiffView {
+    match a.overlay() {
+        Some(chameleon_app::overlay::Overlay::Diff(v)) => v,
+        other => panic!("the diff viewer is open, not {other:?}"),
+    }
+}
+
+#[test]
+fn the_diff_viewer_shows_the_repository_and_the_sessions_edits() {
+    use chameleon_app::diff::DiffSource;
+    let mut a = app();
+    let key = claude_ready(&mut a);
+    feed(&mut a, &key, CLAUDE_EDIT, 3);
+
+    // Opened anywhere but on an edit: the repository's changes, fetched on the host.
+    let fx = a.handle(ctrl('d'), 4);
+    let script = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::Run {
+                tag: ExecTag::GitDiff(id),
+                exec,
+                ..
+            } if *id == key.id => Some(exec.script.clone()),
+            _ => None,
+        })
+        .expect("asks the host for the git diff");
+    assert!(script.contains("cd /work") && script.contains("ls-files --others"));
+    assert_eq!(diff_view(&a).source, DiffSource::Git);
+    assert!(
+        overlay_text(&mut a)
+            .iter()
+            .any(|l| l.contains("reading git diff"))
+    );
+
+    let done = |result| AppEvent::ExecDone {
+        host: key.host.clone(),
+        tag: ExecTag::GitDiff(key.id.clone()),
+        result,
+    };
+    a.handle(done(ok(GIT_DIFF)), 5);
+    let text = overlay_text(&mut a);
+    let joined = text.join("\n");
+    assert!(joined.contains("❯± src/lib.rs"), "{joined}");
+    assert!(joined.contains("+ notes.md"), "{joined}");
+    assert!(joined.contains("@@ -10,3 +10,3 @@"), "{joined}");
+    // Old and new line numbers beside each line.
+    assert!(text.iter().any(|l| l.contains("11    - fn b() {}")), "{joined}");
+    assert!(text.iter().any(|l| l.contains("   11 + fn c() {}")), "{joined}");
+
+    // n moves to the next file.
+    a.handle(ch('n'), 6);
+    assert_eq!(diff_view(&a).file, 1);
+    assert!(overlay_text(&mut a).iter().any(|l| l.contains("2 + todo")));
+    // ] past the last hunk of the last file stays put; n wraps around.
+    a.handle(ch(']'), 6);
+    assert_eq!(diff_view(&a).file, 1);
+    a.handle(ch('n'), 6);
+    assert_eq!(diff_view(&a).file, 0);
+
+    // s: this session's edits, merged per file, paths relative to the session.
+    a.handle(ch('s'), 7);
+    assert_eq!(diff_view(&a).source, DiffSource::Session);
+    let joined = overlay_text(&mut a).join("\n");
+    assert!(
+        joined.contains("src/lib.rs") && !joined.contains("/work/src"),
+        "{joined}"
+    );
+    assert!(
+        joined.contains("+ fn c() {}") && !joined.contains("notes.md"),
+        "{joined}"
+    );
+
+    // r reloads the repository's side.
+    let fx = a.handle(ch('r'), 8);
+    assert!(fx.iter().any(|e| matches!(
+        e,
+        Effect::Run {
+            tag: ExecTag::GitDiff(_),
+            ..
+        }
+    )));
+    a.handle(press(KeyCode::Esc), 8);
+    assert!(a.overlay().is_none());
+
+    // Not a git repository: straight to the session's edits.
+    a.handle(ctrl('d'), 9);
+    a.handle(done(Err("not a git repository".into())), 9);
+    assert_eq!(diff_view(&a).source, DiffSource::Session);
+    a.handle(ch('s'), 9);
+    assert!(
+        overlay_text(&mut a)
+            .iter()
+            .any(|l| l.contains("git: not a git repository"))
+    );
+}

@@ -3,7 +3,7 @@
 
 use acc_core::Harness;
 use acc_core::command::{Choice, Command, CommandEntry, CommandInput, Exec, OptionId};
-use acc_core::event::{ItemKind, Panel, PanelAction};
+use acc_core::event::{Panel, PanelAction};
 use acc_core::item::ItemDetail;
 use acc_core::session::{LaunchRequest, Origin, Permission};
 use acc_core::state::BlockKind;
@@ -84,11 +84,7 @@ pub enum Overlay {
         action: ConfirmAction,
         title: String,
     },
-    Diff {
-        key: SessionKey,
-        item: String,
-        scroll: usize,
-    },
+    Diff(Box<crate::diff::DiffView>),
     /// Picks the value for a palette entry that takes one (`/model`).
     Pick {
         key: SessionKey,
@@ -250,23 +246,6 @@ impl Overlay {
             busy: false,
             error: None,
             resume: None,
-        })
-    }
-
-    /// A diff overlay for the cursor item, or the latest file change.
-    pub fn diff_for(app: &App) -> Option<Self> {
-        let slot = app.selected()?;
-        let session = slot.session.as_ref()?;
-        let items = session.transcript().items();
-        let pick = slot
-            .cursor
-            .and_then(|c| items.get(c))
-            .filter(|i| i.kind == ItemKind::FileChange)
-            .or_else(|| items.iter().rev().find(|i| i.kind == ItemKind::FileChange))?;
-        Some(Overlay::Diff {
-            key: slot.key.clone(),
-            item: pick.id.clone(),
-            scroll: 0,
         })
     }
 
@@ -914,15 +893,11 @@ impl App {
                     _ => {}
                 }
             }
-            Overlay::Diff { scroll, .. } => match key.code {
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('d') => keep = false,
-                KeyCode::Down | KeyCode::Char('j') => *scroll += 1,
-                KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
-                KeyCode::PageDown | KeyCode::Char(' ') => *scroll += 20,
-                KeyCode::PageUp => *scroll = scroll.saturating_sub(20),
-                KeyCode::Home | KeyCode::Char('g') => *scroll = 0,
-                _ => {}
-            },
+            Overlay::Diff(view) => {
+                let (k, fx) = self.diff_key(view, key);
+                keep = k;
+                out = fx;
+            }
         }
         if keep && self.overlay.is_none() {
             self.overlay = Some(overlay);
@@ -1236,13 +1211,6 @@ pub fn agent_rows(session: &acc_core::session::Session) -> Vec<AgentRow> {
         });
     }
     rows
-}
-
-pub fn file_changes(detail: &ItemDetail) -> Option<&[acc_core::item::FileDiff]> {
-    match detail {
-        ItemDetail::FileChange { files } => Some(files),
-        _ => None,
-    }
 }
 
 /// Ticks or unticks option `i`.

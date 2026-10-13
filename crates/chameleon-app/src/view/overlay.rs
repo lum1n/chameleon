@@ -4,12 +4,10 @@ use acc_core::state::BlockKind;
 
 use crate::keymap::Action;
 use crate::model::App;
-use crate::overlay::{
-    ConfirmAction, Overlay, Wizard, file_changes, option_label, panel_actions, permission_modes, steps,
-};
+use crate::overlay::{ConfirmAction, Overlay, Wizard, option_label, panel_actions, permission_modes, steps};
 use crate::style::{Line, Span, Style};
 use crate::view::spinner;
-use crate::view::transcript::{file_head, hunks, option_tone, request_preview};
+use crate::view::transcript::{option_tone, request_preview};
 use crate::view::{OverlayView, Rect};
 use crate::wrap::{fit, truncate, wrap_hang, wrap_line};
 
@@ -282,45 +280,7 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
             selected,
             input,
         } => panel_view(app, key, id, *selected, input.as_deref(), area),
-        Overlay::Diff { key, item, scroll } => {
-            let rect = centered(area, area.w.saturating_sub(4), area.h.saturating_sub(2));
-            let inner = rect.inner();
-            let mut lines = Vec::new();
-            if let Some(slot) = app.slots.iter().find(|s| &s.key == key)
-                && let Some(s) = &slot.session
-                && let Some(it) = s.transcript().get(item)
-                && let Some(files) = file_changes(&it.detail(s.spec().harness))
-            {
-                for f in files {
-                    lines.push(file_head(f, &theme));
-                    lines.extend(hunks(f, &theme));
-                    lines.push(Line::default());
-                }
-            }
-            let total = lines.len();
-            let lines: Vec<Line> = lines
-                .into_iter()
-                .skip(*scroll)
-                .take(inner.h as usize)
-                .map(|l| {
-                    wrap_line(&l, inner.w as usize, "    ")
-                        .into_iter()
-                        .next()
-                        .unwrap_or_default()
-                })
-                .collect();
-            OverlayView {
-                rect,
-                title: "diff".into(),
-                lines,
-                footer: Some(Line::styled(
-                    format!("j/k scroll · {} lines · esc close", total),
-                    muted,
-                )),
-                cursor: None,
-                tone: None,
-            }
-        }
+        Overlay::Diff(view) => crate::view::diff::build(app, view, area),
     })
 }
 

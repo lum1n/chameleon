@@ -28,6 +28,8 @@ pub enum ExecTag {
     Kill(String),
     Remove(String),
     SpecWrite(String),
+    /// The repository's changes for the diff viewer, by session.
+    GitDiff(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
