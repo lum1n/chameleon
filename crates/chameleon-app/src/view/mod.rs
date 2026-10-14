@@ -3,7 +3,7 @@
 //!
 //! The frame is one header line, a body and one status line. The body is
 //! the session list on the left (optional), the transcript and, under a
-//! rule, the prompt. Panes have no borders; thin rules carry the focus.
+//! rule, the prompt. Panes have no borders; the panes without focus fade.
 //!
 //! ```text
 //!  ◆ chameleon  fix the tests  ~/proj · Claude Code · opus        ⚠1 ⠋1 ·2
@@ -25,7 +25,7 @@ pub mod transcript;
 
 use crate::model::{App, Pane};
 use crate::slot::SessionKey;
-use crate::style::{Line, Span, Style};
+use crate::style::{Color, Line, Span, Style};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Rect {
@@ -115,6 +115,30 @@ const COMPOSER_MAX_LINES: usize = 6;
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// How far an unfocused pane's text moves toward the background.
+const FADE: f32 = 0.4;
+
+/// Fades text toward the pane's background; colours that can't mix get
+/// the terminal's dim instead. `text` stands in for the terminal's own.
+fn fade(lines: &mut [Line], text: Color, pane_bg: Color) {
+    for span in lines.iter_mut().flat_map(|l| l.spans.iter_mut()) {
+        let fg = if span.style.fg == Color::Reset {
+            text
+        } else {
+            span.style.fg
+        };
+        let bg = if span.style.bg == Color::Reset {
+            pane_bg
+        } else {
+            span.style.bg
+        };
+        match fg.mix(bg, FADE) {
+            Some(c) => span.style.fg = c,
+            None => span.style.dim = true,
+        }
+    }
+}
+
 /// The spinner frame for a moment in time.
 pub fn spinner(now_ms: u64) -> &'static str {
     SPINNER[(now_ms / 100) as usize % SPINNER.len()]
@@ -163,23 +187,17 @@ impl App {
         let overlay = overlay::build(self, Rect::new(0, 0, w, h.saturating_sub(1)));
         let toasts = self.toasts.iter().map(|t| t.line.clone()).collect();
 
-        // Rules: each pane owns one, lit in the accent while it has focus.
-        let rule = |focused: bool| Style::new().fg(if focused { theme.accent } else { theme.border });
-        let top = rule(self.focus == Pane::Transcript);
-        let side = rule(self.focus == Pane::Sidebar);
-        let bottom = rule(self.focus == Pane::Composer);
+        // Rules stay quiet; focus shows as the other panes fading.
+        let rule = Style::new().fg(theme.border);
         let mut chrome = Vec::new();
         if h > header_rule_y {
             let mut line = Line::default();
             if show_sidebar && sidebar_w > 0 {
-                line.push(Span::new("─".repeat(sidebar_w as usize - 1), top));
-                line.push(Span::new(
-                    "┬",
-                    if self.focus == Pane::Sidebar { side } else { top },
-                ));
-                line.push(Span::new("─".repeat(main_w as usize), top));
+                line.push(Span::new("─".repeat(sidebar_w as usize - 1), rule));
+                line.push(Span::new("┬", rule));
+                line.push(Span::new("─".repeat(main_w as usize), rule));
             } else {
-                line.push(Span::new("─".repeat(w as usize), top));
+                line.push(Span::new("─".repeat(w as usize), rule));
             }
             chrome.push(Placed {
                 x: 0,
@@ -196,27 +214,32 @@ impl App {
                 chrome.push(Placed {
                     x,
                     y,
-                    line: Line::styled("│", side),
+                    line: Line::styled("│", rule),
                 });
             }
         }
         if body_h > 1 {
             let mut line = Line::default();
             let x = if show_sidebar && sidebar_w > 0 {
-                line.push(Span::new(
-                    "├",
-                    if self.focus == Pane::Composer {
-                        bottom
-                    } else {
-                        side
-                    },
-                ));
+                line.push(Span::new("├", rule));
                 sidebar_w - 1
             } else {
                 main_x
             };
-            line.push(Span::new("─".repeat(main_w as usize), bottom));
+            line.push(Span::new("─".repeat(main_w as usize), rule));
             chrome.push(Placed { x, y: rule_y, line });
+        }
+
+        let mut sidebar = sidebar;
+        let mut transcript = transcript;
+        let mut composer = composer;
+        for pane in [sidebar.as_mut(), Some(&mut transcript), Some(&mut composer)]
+            .into_iter()
+            .flatten()
+        {
+            if !pane.focused {
+                fade(&mut pane.lines, theme.agent, pane.bg.unwrap_or(theme.bg));
+            }
         }
 
         self.layout = crate::model::Layout {
@@ -235,5 +258,29 @@ impl App {
             overlay,
             toasts,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fade_mixes_rgb_toward_the_background_and_dims_the_rest() {
+        let bg = Color::Rgb(0, 0, 0);
+        let mut lines = vec![Line::new(vec![
+            Span::new("rgb", Style::new().fg(Color::Rgb(200, 100, 50))),
+            Span::new("plain", Style::new()),
+            Span::new("named", Style::new().fg(Color::Cyan)),
+        ])];
+        fade(&mut lines, Color::Rgb(100, 100, 100), bg);
+        let s = &lines[0].spans;
+        assert_eq!(s[0].style.fg, Color::Rgb(120, 60, 30));
+        assert_eq!(
+            s[1].style.fg,
+            Color::Rgb(60, 60, 60),
+            "terminal text uses the stand-in"
+        );
+        assert!(s[2].style.dim && s[2].style.fg == Color::Cyan);
     }
 }
