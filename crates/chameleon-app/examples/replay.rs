@@ -66,12 +66,15 @@ fn main() {
         },
         2,
     );
+    let mut offset = 0;
     for line in log.split_inclusive(|&b| b == b'\n') {
+        offset += line.len() as u64;
         app.handle(
             AppEvent::FeedLine {
                 host: "local".into(),
                 key: "l:replay-1".into(),
                 bytes: line.to_vec(),
+                offset,
             },
             3,
         );

@@ -120,16 +120,30 @@ fn launch(a: &mut App, harness: Harness, prompt: &str) -> (SessionKey, Vec<Effec
 fn feed(a: &mut App, key: &SessionKey, log: &str, now: u64) -> Vec<Effect> {
     let mut fx = Vec::new();
     for line in log.lines() {
-        fx.extend(a.handle(
-            AppEvent::FeedLine {
-                host: key.host.clone(),
-                key: key.log_key(),
-                bytes: format!("{line}\n").into_bytes(),
-            },
-            now,
-        ));
+        fx.extend(feed_line(a, key, line, now));
     }
     fx
+}
+
+/// Feeds one log line, continuing from where the session has read to.
+fn feed_line(a: &mut App, key: &SessionKey, line: &str, now: u64) -> Vec<Effect> {
+    let read = a
+        .slots()
+        .iter()
+        .find(|s| s.key == *key)
+        .and_then(|s| s.session.as_ref())
+        .map_or(0, |s| s.offset());
+    let bytes = format!("{line}\n").into_bytes();
+    let offset = read + bytes.len() as u64;
+    a.handle(
+        AppEvent::FeedLine {
+            host: key.host.clone(),
+            key: key.log_key(),
+            bytes,
+            offset,
+        },
+        now,
+    )
 }
 
 #[test]
@@ -600,14 +614,7 @@ fn pi_select_dialog_denies_with_the_blocking_option() {
     );
     let mut asked = false;
     for line in PI_TURN.lines() {
-        a.handle(
-            AppEvent::FeedLine {
-                host: key.host.clone(),
-                key: key.log_key(),
-                bytes: format!("{line}\n").into_bytes(),
-            },
-            2,
-        );
+        feed_line(&mut a, &key, line, 2);
         let s = a.selected().unwrap().session.as_ref().unwrap();
         if let Some(p) = s.permissions().first() {
             asked = true;
@@ -651,6 +658,7 @@ fn exit_file_closes_the_session_and_unfollows_later() {
             host: key.host.clone(),
             key: key.exit_key(),
             bytes: b"0\n".to_vec(),
+            offset: 2,
         },
         3,
     );
@@ -1241,4 +1249,50 @@ fn quota_windows_get_meters_like_the_context() {
     let (n, status) = cells(&mut a, 90);
     assert_eq!(n, 0, "{status}");
     assert!(status.contains("7d"), "{status}");
+}
+
+#[test]
+fn lines_handed_out_again_are_not_fed_twice() {
+    let mut a = app();
+    let (key, _) = launch(&mut a, Harness::Claude, "");
+    a.handle(
+        AppEvent::ExecDone {
+            host: key.host.clone(),
+            tag: ExecTag::Launch(key.id.clone()),
+            result: ok("1\n"),
+        },
+        1,
+    );
+    fn session(a: &App) -> &acc_core::session::Session {
+        a.selected().unwrap().session.as_ref().unwrap()
+    }
+    let start = session(&a).offset();
+    let mut lines = Vec::new();
+    let mut offset = start;
+    for line in CLAUDE_HI.lines() {
+        let bytes = format!("{line}\n").into_bytes();
+        offset += bytes.len() as u64;
+        lines.push((bytes, offset));
+    }
+    let send = |a: &mut App, (bytes, offset): &(Vec<u8>, u64)| {
+        a.handle(
+            AppEvent::FeedLine {
+                host: key.host.clone(),
+                key: key.log_key(),
+                bytes: bytes.clone(),
+                offset: *offset,
+            },
+            2,
+        );
+    };
+    for l in &lines {
+        send(&mut a, l);
+    }
+    let once = format!("{:?}", session(&a).transcript().items());
+    // A restarted feed hands the same lines out again.
+    for l in &lines {
+        send(&mut a, l);
+    }
+    assert_eq!(session(&a).offset(), offset);
+    assert_eq!(format!("{:?}", session(&a).transcript().items()), once);
 }

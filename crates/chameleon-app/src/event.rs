@@ -78,6 +78,8 @@ pub enum AppEvent {
         host: HostId,
         key: String,
         bytes: Vec<u8>,
+        /// The file offset just past this line.
+        offset: u64,
     },
     FeedUp {
         host: HostId,

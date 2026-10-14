@@ -156,6 +156,7 @@ impl Feed {
                         host: me.id.clone(),
                         key: l.key,
                         bytes: l.bytes,
+                        offset: l.offset,
                     });
                 }
             }

@@ -441,7 +441,13 @@ impl App {
         out
     }
 
-    pub(crate) fn on_feed_line(&mut self, host: &HostId, key: &str, bytes: &[u8]) -> Vec<Effect> {
+    pub(crate) fn on_feed_line(
+        &mut self,
+        host: &HostId,
+        key: &str,
+        bytes: &[u8],
+        offset: u64,
+    ) -> Vec<Effect> {
         let Some((id, is_exit)) = SessionKey::parse_feed_key(key) else {
             return Vec::new();
         };
@@ -457,7 +463,13 @@ impl App {
         let updates = if is_exit {
             session.on_exit_file(&String::from_utf8_lossy(bytes), now)
         } else {
-            session.feed(bytes, now)
+            // A restarted feed, or one still draining after a re-follow, can
+            // hand out lines the session already read; acc appends a fed
+            // delta to its item, so it would show twice.
+            match unread(bytes, offset, session.offset()) {
+                Some(b) => session.feed(b, now),
+                None => return Vec::new(),
+            }
         };
         let mut out = self.process_updates(i, updates);
         out.extend(self.flush(i));
@@ -606,5 +618,28 @@ impl App {
                 .unwrap_or_else(|| Exec::new(String::new())),
         };
         vec![self.run(&key.host, exec, ExecTag::Remove(key.id.clone()))]
+    }
+}
+
+/// What of a line ending at file offset `end` lies past `read`, or `None`
+/// when it was all read.
+fn unread(bytes: &[u8], end: u64, read: u64) -> Option<&[u8]> {
+    if end <= read {
+        return None;
+    }
+    let new = usize::try_from(end - read).unwrap_or(usize::MAX);
+    Some(&bytes[bytes.len().saturating_sub(new)..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unread;
+
+    #[test]
+    fn unread_skips_and_trims_what_was_read() {
+        assert_eq!(unread(b"abc\n", 4, 4), None);
+        assert_eq!(unread(b"abc\n", 4, 9), None);
+        assert_eq!(unread(b"abc\n", 4, 0), Some(&b"abc\n"[..]));
+        assert_eq!(unread(b"abc\n", 4, 2), Some(&b"c\n"[..]));
     }
 }

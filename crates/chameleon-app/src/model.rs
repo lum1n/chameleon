@@ -283,7 +283,12 @@ impl App {
             AppEvent::Mouse { x, y, kind } => self.on_mouse(x, y, kind),
             AppEvent::Tick => self.on_tick(),
             AppEvent::ExecDone { host, tag, result } => self.on_exec_done(&host, tag, result),
-            AppEvent::FeedLine { host, key, bytes } => self.on_feed_line(&host, &key, &bytes),
+            AppEvent::FeedLine {
+                host,
+                key,
+                bytes,
+                offset,
+            } => self.on_feed_line(&host, &key, &bytes, offset),
             AppEvent::FeedUp { host } => {
                 if let Some(h) = self.host_mut(&host) {
                     h.feed = FeedStatus::Up;

@@ -276,12 +276,16 @@ mod tests {
             },
             2,
         );
+        let mut offset = 0;
         for l in log.lines() {
+            let bytes = format!("{l}\n").into_bytes();
+            offset += bytes.len() as u64;
             app.handle(
                 AppEvent::FeedLine {
                     host: "local".into(),
                     key: "l:s1".into(),
-                    bytes: format!("{l}\n").into_bytes(),
+                    bytes,
+                    offset,
                 },
                 3,
             );
