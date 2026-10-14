@@ -1084,7 +1084,14 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
             l.push(Span::new("optional · alt-enter adds a line", muted.italic()));
         } else {
             if focused && r == last {
-                cursor = Some(((PAD.len() + 4 + row.width()) as u16, lines.len() as u16));
+                // Wrapping trims trailing spaces; the cursor still steps over them.
+                let spaces = if prompt.ends_with('\n') {
+                    0
+                } else {
+                    prompt.len() - prompt.trim_end_matches(' ').len()
+                };
+                let x = (row.width() + spaces).min(text_w);
+                cursor = Some(((PAD.len() + 4 + x) as u16, lines.len() as u16));
             }
             l.spans.extend(row.spans);
         }

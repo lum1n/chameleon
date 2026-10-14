@@ -52,7 +52,9 @@ pub fn wrapped(c: &Composer, w: usize) -> (Vec<Line>, (usize, usize)) {
                 .get(row)
                 .map(|l| l.text().chars().take(col).collect())
                 .unwrap_or_default();
-            cursor = (lines.len() + row, width(&prefix));
+            // Wrapping trims trailing spaces; the cursor still steps over them.
+            let spaces = col.saturating_sub(prefix.chars().count());
+            cursor = (lines.len() + row, width(&prefix) + spaces);
         }
         lines.extend(wrapped);
     }
@@ -139,5 +141,21 @@ pub fn build(app: &App, rect: Rect) -> PaneView {
         hits: Vec::new(),
         // A raised dock where the theme has a surface colour.
         bg: (theme.surface != Color::Reset).then_some(theme.surface),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_cursor_steps_over_trailing_spaces() {
+        let mut c = Composer::default();
+        c.insert("hi");
+        assert_eq!(wrapped(&c, 40).1, (0, 2));
+        c.insert("   ");
+        assert_eq!(wrapped(&c, 40).1, (0, 5));
+        c.insert("\nx ");
+        assert_eq!(wrapped(&c, 40).1, (1, 2));
     }
 }
