@@ -91,6 +91,9 @@ fn pane(frame: &mut Frame, p: &PaneView, theme: &Theme) {
         return;
     }
     let area = rect(p.rect);
+    if let Some(bg) = p.bg {
+        frame.render_widget(Block::default().style(base(theme, bg)), area);
+    }
     let lines: Vec<RLine> = p.lines.iter().map(line).collect();
     frame.render_widget(Paragraph::new(lines), area);
     if let Some(sb) = &p.scrollbar
@@ -313,7 +316,11 @@ mod tests {
             .iter()
             .position(|r| r.contains('├'))
             .expect("the prompt's rule");
-        assert_eq!(rows[rule + 1].chars().nth(sb + 1), Some('❯'));
+        assert_eq!(
+            rows[rule + 2].chars().nth(sb + 2),
+            Some('❯'),
+            "padded under the rule"
+        );
         assert!(rows[rule + 1].chars().nth(sb - 1) == Some('│'));
         assert!(rows[2].contains("local"), "{:?}", rows[2]);
         assert!(
@@ -337,7 +344,7 @@ mod tests {
             "no vertical rule left in the body"
         );
         assert!(
-            rows.iter().any(|r| r.starts_with(" ❯")),
+            rows.iter().any(|r| r.starts_with("  ❯")),
             "the prompt spans the width"
         );
         assert!(rows[0].contains("ctrl-b"), "{:?}", rows[0]);

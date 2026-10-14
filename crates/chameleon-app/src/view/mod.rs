@@ -72,6 +72,8 @@ pub struct PaneView {
     pub scrollbar: Option<Scrollbar>,
     /// For the sidebar: the session on each line, for mouse clicks.
     pub hits: Vec<Option<SessionKey>>,
+    /// Painted under the whole rect first (the composer's dock).
+    pub bg: Option<crate::style::Color>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,12 +145,13 @@ impl App {
         let text_x = main_x.saturating_add(1);
         let text_w = main_w.saturating_sub(2);
 
-        let composer_text_w = (text_w as usize).saturating_sub(composer::PROMPT_W).max(1);
+        // The composer spans the main column, its text inset by padding.
+        let composer_text_w = composer::text_width(main_w as usize);
         let composer_lines = composer::wrapped_lines(&self.composer, composer_text_w);
-        let composer_h =
-            (composer_lines.len().clamp(1, COMPOSER_MAX_LINES) as u16).min(body_h.saturating_sub(1));
+        let composer_h = (composer_lines.len().clamp(1, COMPOSER_MAX_LINES) + 2 * composer::PAD_Y) as u16;
+        let composer_h = composer_h.min(body_h.saturating_sub(1));
         let composer_y = (body_y + body_h).saturating_sub(composer_h);
-        let composer_rect = Rect::new(text_x, composer_y, text_w, composer_h);
+        let composer_rect = Rect::new(main_x, composer_y, main_w, composer_h);
         let rule_y = composer_y.saturating_sub(1);
         let transcript_rect = Rect::new(text_x, body_y, text_w, rule_y.saturating_sub(body_y));
 

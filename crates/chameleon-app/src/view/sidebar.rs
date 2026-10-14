@@ -166,5 +166,6 @@ pub fn build(app: &App, rect: Rect) -> PaneView {
         cursor: None,
         scrollbar: None,
         hits,
+        bg: None,
     }
 }

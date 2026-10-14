@@ -1,13 +1,32 @@
-//! The prompt editor's pane: a `❯` and the text, with a hint while empty.
+//! The prompt editor's pane: a dock under the transcript with a `❯` and
+//! the text, padded on every side, a hint while empty and the keys while
+//! typing.
+//!
+//! ```text
+//! ├──────────────────────────────────────────────
+//!
+//!   ❯ fix the failing tests and explain what
+//!     broke
+//!                     enter send · alt-enter line
+//! ```
 
 use crate::composer::Composer;
 use crate::model::{App, Pane};
-use crate::style::{Line, Span, Style};
+use crate::style::{Color, Line, Span, Style};
 use crate::view::{PaneView, Rect};
 use crate::wrap::{width, wrap_line};
 
 /// Columns taken by the prompt glyph and its space.
 pub const PROMPT_W: usize = 2;
+/// Columns of air left of the prompt and right of the text.
+pub const PAD_X: usize = 2;
+/// Rows of air above and below the text.
+pub const PAD_Y: usize = 1;
+
+/// The width text wraps to in a composer `w` columns wide.
+pub fn text_width(w: usize) -> usize {
+    w.saturating_sub(2 * PAD_X + PROMPT_W).max(1)
+}
 
 /// The composer's text wrapped to `w` columns, plus the cursor's (line, col).
 pub fn wrapped(c: &Composer, w: usize) -> (Vec<Line>, (usize, usize)) {
@@ -49,30 +68,30 @@ pub fn wrapped_lines(c: &Composer, w: usize) -> Vec<Line> {
 
 pub fn build(app: &App, rect: Rect) -> PaneView {
     let theme = app.theme;
-    let w = (rect.w as usize).saturating_sub(PROMPT_W).max(1);
+    let w = text_width(rect.w as usize);
     let (lines, (cl, cc)) = wrapped(&app.composer, w);
     let focused = app.focus == Pane::Composer;
-    let h = (rect.h as usize).max(1);
+    let muted = Style::new().fg(theme.muted);
+    // Too short for air: the text alone.
+    let pad = if rect.h as usize > 2 * PAD_Y { PAD_Y } else { 0 };
+    let h = (rect.h as usize).saturating_sub(2 * pad).max(1);
     let offset = cl.saturating_sub(h - 1);
     let prompt = Style::new()
         .fg(if focused { theme.accent } else { theme.muted })
         .bold();
-    let mut out: Vec<Line> = lines
-        .into_iter()
-        .enumerate()
-        .skip(offset)
-        .take(h)
-        .map(|(i, l)| {
-            let mut line = Line::new(vec![Span::new(if i == 0 { "❯ " } else { "  " }, prompt)]);
-            line.spans.extend(l.spans);
-            line
-        })
-        .collect();
+    let indent = " ".repeat(PAD_X);
+    let mut out = vec![Line::default(); pad];
+    out.extend(lines.iter().enumerate().skip(offset).take(h).map(|(i, l)| {
+        let glyph = if i == 0 { "❯ " } else { "  " };
+        let mut line = Line::new(vec![Span::raw(indent.clone()), Span::new(glyph, prompt)]);
+        line.spans.extend(l.spans.iter().cloned());
+        line
+    }));
     if app.composer.is_empty() {
         let hint = match app.selected() {
             Some(s) if s.session.is_some() && s.is_alive() => {
                 if focused {
-                    "say something · enter sends · alt-enter adds a line · / commands"
+                    "say something · / commands"
                 } else {
                     "type to prompt · / commands"
                 }
@@ -80,16 +99,35 @@ pub fn build(app: &App, rect: Rect) -> PaneView {
             Some(_) => "this session isn't running · n starts a new one",
             None => "n starts a session",
         };
-        if let Some(first) = out.first_mut() {
-            first.push(Span::new(hint, Style::new().fg(theme.muted).italic()));
+        if let Some(first) = out.get_mut(pad) {
+            first.push(Span::new(hint, muted.italic()));
         }
+    }
+    if pad > 0 {
+        // The keys, right-aligned in the bottom air; how much is above
+        // when the text scrolls.
+        let mut keys = Vec::new();
+        if offset > 0 {
+            keys.push(format!("↑ {offset} more"));
+        }
+        if focused {
+            keys.push("enter send · alt-enter line".to_owned());
+        }
+        let keys = keys.join(" · ");
+        let mut bottom = Line::default();
+        if !keys.is_empty() {
+            let room = (rect.w as usize).saturating_sub(PAD_X);
+            bottom.push(Span::raw(" ".repeat(room.saturating_sub(width(&keys)))));
+            bottom.push(Span::new(keys, muted));
+        }
+        out.push(bottom);
     }
     let cursor = focused.then(|| {
         (
             rect.x
-                .saturating_add(PROMPT_W as u16)
+                .saturating_add((PAD_X + PROMPT_W) as u16)
                 .saturating_add(cc.min(w.saturating_sub(1)) as u16),
-            rect.y.saturating_add((cl - offset) as u16),
+            rect.y.saturating_add((pad + cl - offset) as u16),
         )
     });
     PaneView {
@@ -99,5 +137,7 @@ pub fn build(app: &App, rect: Rect) -> PaneView {
         cursor,
         scrollbar: None,
         hits: Vec::new(),
+        // A raised dock where the theme has a surface colour.
+        bg: (theme.surface != Color::Reset).then_some(theme.surface),
     }
 }

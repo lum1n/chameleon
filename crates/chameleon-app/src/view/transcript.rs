@@ -200,6 +200,7 @@ pub fn build(app: &mut App, rect: Rect) -> PaneView {
             visible: rect.h as usize,
         }),
         hits: Vec::new(),
+        bg: None,
     }
 }
 
@@ -215,6 +216,7 @@ fn empty(rect: Rect, theme: &Theme, msg: &[&str]) -> PaneView {
         cursor: None,
         scrollbar: None,
         hits: Vec::new(),
+        bg: None,
     }
 }
 

@@ -113,5 +113,8 @@ fn main() {
         println!("{}", l.text());
     }
     println!("{}", "─".repeat(width as usize));
+    for l in &screen.composer.lines {
+        println!("{}", l.text());
+    }
     println!("{}", screen.status.text());
 }
