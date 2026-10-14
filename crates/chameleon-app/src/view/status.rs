@@ -10,13 +10,26 @@ use crate::style::{Line, Span, Style};
 use crate::view::spinner;
 use crate::wrap::{truncate, width};
 
-/// Cells in the context meter.
+/// Cells in a meter, when the bar has room.
 const METER_W: u64 = 6;
 /// Width of the longest state word ("attaching", "replaying"), so the
 /// rest of the bar doesn't move when the state changes.
 const STATE_W: usize = 9;
 
 pub fn build(app: &App, w: usize) -> Line {
+    // Full meters where they fit, then short ones, then bare percentages.
+    let mut line = Line::default();
+    for cells in [METER_W, 4, 0] {
+        line = bar(app, w, cells);
+        if line.width() <= w {
+            break;
+        }
+    }
+    line
+}
+
+/// The bar with meters `cells` wide; none at 0.
+fn bar(app: &App, w: usize, cells: u64) -> Line {
     let t = app.theme;
     let muted = Style::new().fg(t.muted);
     let sep = Span::new("│ ", muted);
@@ -64,14 +77,7 @@ pub fn build(app: &App, w: usize) -> Line {
         if let (Some(used), Some(window)) = (u.context_used, u.context_window)
             && window > 0
         {
-            let pct = (used * 100 / window).min(100);
-            let hot = pct >= 80;
-            usage.push(Span::new("ctx ", muted));
-            usage.push(Span::new(
-                meter(pct),
-                Style::new().fg(if hot { t.permission } else { t.accent }),
-            ));
-            usage.push(Span::new(format!(" {pct:>3}%"), Style::new()));
+            usage.extend(gauge("ctx", (used * 100 / window).min(100), cells, app));
         } else if let Some(used) = u.context_used {
             usage.push(Span::new("ctx ", muted));
             usage.push(Span::new(format!("{:<5}", short(used)), Style::new()));
@@ -96,30 +102,20 @@ pub fn build(app: &App, w: usize) -> Line {
             line.push(Span::raw(" "));
         }
         if let Some(q) = session.quota() {
-            let mut parts = Vec::new();
+            let mut parts: Vec<Span> = Vec::new();
             for win in &q.windows {
                 if let Some(p) = win.used_percent {
-                    parts.push(format!(
-                        "{} {:>3.0}%",
-                        short_window(&win.id, win.window_minutes),
-                        p
-                    ));
+                    if !parts.is_empty() {
+                        parts.push(Span::raw("  "));
+                    }
+                    let label = short_window(&win.id, win.window_minutes);
+                    parts.extend(gauge(&label, p.round().clamp(0.0, 100.0) as u64, cells, app));
                 }
             }
             if !parts.is_empty() {
                 line.push(sep.clone());
-                let hot = q
-                    .windows
-                    .iter()
-                    .any(|w| w.used_percent.is_some_and(|p| p >= 80.0));
-                line.push(Span::new(
-                    format!("{} ", parts.join(" ")),
-                    if hot {
-                        Style::new().fg(t.permission)
-                    } else {
-                        Style::new()
-                    },
-                ));
+                line.spans.extend(parts);
+                line.push(Span::raw(" "));
             }
         }
         let running = session.transcript().items().iter().rev().find(|i| {
@@ -135,7 +131,9 @@ pub fn build(app: &App, w: usize) -> Line {
                 acc_core::item::ItemDetail::FileChange { files } => {
                     files.first().map(|f| f.path.clone()).unwrap_or_default()
                 }
-                acc_core::item::ItemDetail::Subagent { agent, description, .. } => {
+                acc_core::item::ItemDetail::Subagent {
+                    agent, description, ..
+                } => {
                     format!("{} {description}", agent.as_deref().unwrap_or("subagent"))
                 }
                 acc_core::item::ItemDetail::Text => String::new(),
@@ -172,10 +170,33 @@ pub fn build(app: &App, w: usize) -> Line {
     line
 }
 
-/// `▰▰▰▱▱▱` for a percentage.
-fn meter(pct: u64) -> String {
-    let full = (pct * METER_W).div_ceil(100).min(METER_W) as usize;
-    format!("{}{}", "▰".repeat(full), "▱".repeat(METER_W as usize - full))
+/// `ctx ▰▰▱▱▱▱  31%`: a label, a meter (the permission colour from 80%)
+/// and the percentage; `ctx 31%` with no cells.
+fn gauge(label: &str, pct: u64, cells: u64, app: &App) -> Vec<Span> {
+    let t = app.theme;
+    let hot = pct >= 80;
+    let value = if hot {
+        Style::new().fg(t.permission)
+    } else {
+        Style::new()
+    };
+    let mut out = vec![Span::new(format!("{label} "), Style::new().fg(t.muted))];
+    if cells == 0 {
+        out.push(Span::new(format!("{pct}%"), value));
+        return out;
+    }
+    out.push(Span::new(
+        meter(pct, cells),
+        Style::new().fg(if hot { t.permission } else { t.accent }),
+    ));
+    out.push(Span::new(format!(" {pct:>3}%"), value));
+    out
+}
+
+/// `▰▰▰▱▱▱` for a percentage, `cells` wide.
+fn meter(pct: u64, cells: u64) -> String {
+    let full = (pct * cells).div_ceil(100).min(cells) as usize;
+    format!("{}{}", "▰".repeat(full), "▱".repeat(cells as usize - full))
 }
 
 fn short(n: u64) -> String {

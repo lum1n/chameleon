@@ -1216,3 +1216,29 @@ fn vim_keys_move_through_the_wizard_and_the_palette() {
     };
     assert_eq!(query, "k");
 }
+
+#[test]
+fn quota_windows_get_meters_like_the_context() {
+    let mut a = app();
+    claude_ready(&mut a);
+    let windows = a
+        .selected()
+        .and_then(|s| s.session.as_ref())
+        .and_then(|s| s.quota())
+        .map_or(0, |q| {
+            q.windows.iter().filter(|w| w.used_percent.is_some()).count()
+        });
+    assert!(windows > 0, "the fixture reports quota");
+    let cells = |a: &mut App, width: u16| {
+        a.handle(AppEvent::Resize { width, height: 40 }, 9);
+        let status = a.screen().status.text();
+        (status.matches('▰').count() + status.matches('▱').count(), status)
+    };
+    // Wide: six cells for the context and for every window.
+    let (n, status) = cells(&mut a, 200);
+    assert_eq!(n, 6 * (windows + 1), "{status}");
+    // Narrow: bare percentages rather than a clipped window.
+    let (n, status) = cells(&mut a, 90);
+    assert_eq!(n, 0, "{status}");
+    assert!(status.contains("7d"), "{status}");
+}
