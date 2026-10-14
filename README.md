@@ -48,6 +48,7 @@ Rust 1.88 or newer. The optional Lua runtime needs `--features lua`.
 |---|---|
 | `n` / `ctrl-n` | start a session: host, harness, directory, model, permission, first prompt. The directory completes from the host: `tab` completes, `↓` `↑` pick, `enter` takes |
 | `j` `k` `1`-`0` | pick a session; in the transcript, move between items |
+| `ctrl-j` `ctrl-k` / `ctrl-h` `ctrl-l` | in every list, picker and form (the palette and launcher too): down / up and change a choice, even while typing. Plain `hjkl` and `g` `G` where nothing is typed |
 | `b` / `ctrl-b` | show or hide the session list (`h` brings it back too) |
 | `T` | colour theme: previews as you move, `enter` keeps it across restarts |
 | `B` | transcript blocks: coloured bars, boxed messages, or plain |

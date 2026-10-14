@@ -112,6 +112,22 @@ impl Wizard {
     }
 }
 
+/// Vim chords that work in every overlay, even while typing: `ctrl-j` /
+/// `ctrl-k` (and emacs' `ctrl-n` / `ctrl-p`) are down / up, `ctrl-h` /
+/// `ctrl-l` left / right.
+fn vim_chord(key: Key) -> Key {
+    if !key.ctrl || key.alt {
+        return key;
+    }
+    match key.code {
+        KeyCode::Char('j' | 'n') => Key::new(KeyCode::Down),
+        KeyCode::Char('k' | 'p') => Key::new(KeyCode::Up),
+        KeyCode::Char('h') => Key::new(KeyCode::Left),
+        KeyCode::Char('l') => Key::new(KeyCode::Right),
+        _ => key,
+    }
+}
+
 /// Lists the subdirectories of `dir` (a parent typed into the wizard, `~`
 /// for the home directory, relative to where scripts run), one per line.
 fn list_dirs_script(dir: &str) -> String {
@@ -505,6 +521,7 @@ impl App {
         let Some(mut overlay) = self.overlay.take() else {
             return Vec::new();
         };
+        let key = vim_chord(key);
         let mut out = Vec::new();
         let mut keep = true;
         match &mut overlay {
@@ -514,6 +531,9 @@ impl App {
                 }
                 KeyCode::Char('j') | KeyCode::Down => *scroll += 1,
                 KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
+                KeyCode::Char(' ') | KeyCode::PageDown => *scroll += 10,
+                KeyCode::Char('b') | KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                KeyCode::Char('g') | KeyCode::Home => *scroll = 0,
                 _ => {}
             },
             Overlay::Confirm {
@@ -672,6 +692,18 @@ impl App {
                 }
             }
             Overlay::Launch(w) => {
+                // The host and harness rows take no text: hjkl move there.
+                let key = if w.field < 2 && !key.ctrl && !key.alt {
+                    match key.code {
+                        KeyCode::Char('j') => Key::new(KeyCode::Down),
+                        KeyCode::Char('k') => Key::new(KeyCode::Up),
+                        KeyCode::Char('h') => Key::new(KeyCode::Left),
+                        KeyCode::Char('l') => Key::new(KeyCode::Right),
+                        _ => key,
+                    }
+                } else {
+                    key
+                };
                 if w.busy {
                     if key.code == KeyCode::Esc {
                         keep = false;
@@ -791,10 +823,6 @@ impl App {
                     KeyCode::Up | KeyCode::BackTab => {
                         *selected = (*selected + matches.len().max(1) - 1) % matches.len().max(1)
                     }
-                    KeyCode::Char('n') if key.ctrl => *selected = (*selected + 1) % matches.len().max(1),
-                    KeyCode::Char('p') if key.ctrl => {
-                        *selected = (*selected + matches.len().max(1) - 1) % matches.len().max(1)
-                    }
                     KeyCode::Enter => {
                         keep = false;
                         if let Some(it) = matches.get(*selected).cloned() {
@@ -894,6 +922,8 @@ impl App {
                     KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => {
                         *selected = (*selected + n - 1) % n
                     }
+                    KeyCode::Home | KeyCode::Char('g') => *selected = 0,
+                    KeyCode::End | KeyCode::Char('G') => *selected = n - 1,
                     KeyCode::Enter => {
                         keep = false;
                         if let Some(c) = choices.get(*selected) {

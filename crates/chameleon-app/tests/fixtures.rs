@@ -1087,7 +1087,7 @@ fn the_wizard_offers_the_models_a_session_reported() {
     };
     assert_eq!(w.fields[1], models[0]);
     let text = overlay_text(&mut a).join("\n");
-    assert!(text.contains("←/→") && text.contains(&models[0]), "{text}");
+    assert!(text.contains("ctrl-h/l") && text.contains(&models[0]), "{text}");
 
     // Another harness has no models here, so the pick is dropped.
     a.handle(press(KeyCode::Up), 5); // directory
@@ -1163,4 +1163,53 @@ fn the_wizard_completes_directories_from_the_host() {
         panic!("expected the wizard");
     };
     assert_eq!(w.field, 3);
+}
+
+#[test]
+fn vim_keys_move_through_the_wizard_and_the_palette() {
+    use chameleon_app::overlay::Overlay;
+    let mut a = app();
+    claude_ready(&mut a);
+    let field = |a: &App| match a.overlay() {
+        Some(Overlay::Launch(w)) => (w.field, w.harness),
+        _ => panic!("expected the wizard"),
+    };
+    a.handle(ctrl('n'), 5);
+    assert_eq!(field(&a).0, 2, "starts on the directory");
+    // ctrl-k / ctrl-j move while a text field has focus; typed j stays text.
+    a.handle(ctrl('k'), 5);
+    assert_eq!(field(&a).0, 1);
+    // The harness row takes no text: plain l and k work there.
+    let before = field(&a).1;
+    a.handle(ch('l'), 5);
+    assert_ne!(field(&a).1, before);
+    a.handle(ch('h'), 5);
+    assert_eq!(field(&a).1, before);
+    a.handle(ch('k'), 5);
+    assert_eq!(field(&a).0, 0);
+    a.handle(ch('j'), 5);
+    a.handle(ctrl('j'), 5);
+    assert_eq!(field(&a).0, 2);
+    a.handle(ctrl('u'), 5);
+    a.handle(ch('j'), 5);
+    let Some(Overlay::Launch(w)) = a.overlay() else {
+        panic!("expected the wizard");
+    };
+    assert_eq!(w.fields[0], "j");
+    a.handle(press(KeyCode::Esc), 5);
+
+    // The palette filters on j and k; ctrl-j / ctrl-k move.
+    a.handle(ctrl('p'), 6);
+    a.handle(ctrl('j'), 6);
+    a.handle(ctrl('j'), 6);
+    a.handle(ctrl('k'), 6);
+    let Some(Overlay::Palette { selected, query }) = a.overlay() else {
+        panic!("expected the palette");
+    };
+    assert_eq!((*selected, query.as_str()), (1, ""));
+    a.handle(ch('k'), 6);
+    let Some(Overlay::Palette { query, .. }) = a.overlay() else {
+        panic!("expected the palette");
+    };
+    assert_eq!(query, "k");
 }

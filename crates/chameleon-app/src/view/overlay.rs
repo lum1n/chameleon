@@ -36,6 +36,22 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
                 ]));
             }
             lines.push(Line::default());
+            lines.push(Line::styled("lists and forms", accent.bold()));
+            for (k, d) in [
+                ("j / k  h / l", "move / change a choice where nothing is typed"),
+                ("g / G", "first / last"),
+                (
+                    "ctrl-j / ctrl-k",
+                    "down / up, even while typing (also ctrl-n / ctrl-p)",
+                ),
+                (
+                    "ctrl-h / ctrl-l",
+                    "left / right: change a choice, even while typing",
+                ),
+            ] {
+                lines.push(Line::new(vec![Span::new(fit(k, 18), accent), Span::raw(d)]));
+            }
+            lines.push(Line::default());
             lines.push(Line::styled("composer", accent.bold()));
             for (k, d) in [
                 ("enter", "send the prompt"),
@@ -86,7 +102,10 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
                 rect,
                 title: "help".into(),
                 lines,
-                footer: Some(Line::styled("j/k scroll · esc close", muted)),
+                footer: Some(Line::styled(
+                    "j/k scroll · space/b page · g top · esc close",
+                    muted,
+                )),
                 cursor: None,
                 tone: None,
             }
@@ -157,7 +176,7 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
                 title: "commands".into(),
                 lines,
                 footer: Some(Line::styled(
-                    "type to filter · enter: run · words after the name are arguments",
+                    "type to filter · ctrl-j/k move · enter: run · words after the name are arguments",
                     muted,
                 )),
                 cursor,
@@ -217,7 +236,10 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
                 rect,
                 title: "options".into(),
                 lines,
-                footer: Some(Line::styled("←/→ change · enter: apply · esc: cancel", muted)),
+                footer: Some(Line::styled(
+                    "j/k row · h/l change · enter: apply · esc: cancel",
+                    muted,
+                )),
                 cursor: None,
                 tone: None,
             }
@@ -269,7 +291,7 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
                 rect,
                 title: format!("/{command}"),
                 lines,
-                footer: Some(Line::styled("↑/↓ choose · enter: set · esc: cancel", muted)),
+                footer: Some(Line::styled("j/k choose · enter: set · esc: cancel", muted)),
                 cursor: None,
                 tone: None,
             }
@@ -393,7 +415,7 @@ fn panel_view(
     } else if n == 0 {
         "esc: close".to_owned()
     } else {
-        "↑/↓ choose · enter: run · esc: close".to_owned()
+        "j/k choose · enter: run · esc: close".to_owned()
     };
     OverlayView {
         rect,
@@ -838,7 +860,7 @@ fn themes_view(app: &App, selected: usize, area: Rect) -> OverlayView {
         rect,
         title: "theme".into(),
         lines: lines.into_iter().skip(start).take(room).collect(),
-        footer: Some(Line::styled("↑/↓ preview · enter keep · esc revert", muted)),
+        footer: Some(Line::styled("j/k preview · enter keep · esc revert", muted)),
         cursor: None,
         tone: None,
     }
@@ -860,7 +882,7 @@ fn themes_view(app: &App, selected: usize, area: Rect) -> OverlayView {
 /// │    ┃ fix the failing tests                                 │
 /// │                                                            │
 /// │    ⏵ starts Claude Code on local, detached                 │
-/// ╰──────────── tab next · ←/→ choose · ctrl-enter start · esc ╯
+/// ╰──── tab/ctrl-j next · ctrl-h/l choose · ctrl-enter start · esc ╯
 /// ```
 fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
     const LABEL: usize = 14;
@@ -1021,7 +1043,7 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
             if end < models.len() {
                 m.push(Span::new(format!("… +{} ", models.len() - end), muted));
             }
-            m.push(Span::new(" ←/→", muted));
+            m.push(Span::new(" ctrl-h/l", muted));
             lines.extend(wrap_hang(&m, width + PAD.len(), &hang));
         }
         let modes = permission_modes(w.harness);
@@ -1031,7 +1053,7 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
                 m.push(chip(mode, value == mode, false));
                 m.push(Span::raw(" "));
             }
-            m.push(Span::new(" ←/→", muted));
+            m.push(Span::new(" ctrl-h/l", muted));
             lines.extend(wrap_hang(&m, width + PAD.len(), &hang));
         }
     }
@@ -1094,7 +1116,7 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
         width,
         &Line::raw(PAD.to_owned() + "  "),
     ));
-    let footer = "tab next · ←/→ choose · ctrl-enter start · esc cancel";
+    let footer = "tab/ctrl-j next · ctrl-h/l choose · ctrl-enter start · esc cancel";
     let (rect, lines, cursor) = fit_content(rect, lines, cursor);
     OverlayView {
         rect,
