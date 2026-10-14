@@ -30,14 +30,104 @@ pub struct Wizard {
     pub busy: bool,
     pub error: Option<String>,
     pub resume: Option<String>,
+    /// Subdirectories of the directory typed so far, listed on the host:
+    /// the completions of the directory field.
+    pub dirs: Vec<String>,
+    /// The host and parent directory `dirs` were (or are being) listed for.
+    pub dirs_for: Option<(usize, String)>,
+    /// The highlighted completion.
+    pub pick: Option<usize>,
 }
 
 impl Wizard {
     pub const FIELDS: usize = 6;
+    /// The directory field.
+    pub const DIR: usize = 2;
 
     pub fn text_field(&self) -> Option<usize> {
         self.field.checked_sub(2).filter(|i| *i < 4)
     }
+
+    /// The directory typed so far, split after its last `/`: the parent
+    /// to list and the start of the name to complete.
+    pub fn dir_parts(&self) -> (&str, &str) {
+        let v = &self.fields[0];
+        let cut = v.rfind('/').map_or(0, |i| i + 1);
+        v.split_at(cut)
+    }
+
+    /// The listed subdirectories the typed name starts, hidden ones only
+    /// once a `.` is typed.
+    pub fn dir_matches(&self) -> Vec<&str> {
+        let (parent, base) = self.dir_parts();
+        if self
+            .dirs_for
+            .as_ref()
+            .is_none_or(|(h, p)| *h != self.host || p != parent)
+        {
+            return Vec::new();
+        }
+        self.dirs
+            .iter()
+            .map(String::as_str)
+            .filter(|d| d.starts_with(base) && (base.starts_with('.') || !d.starts_with('.')))
+            .collect()
+    }
+
+    /// Completes the directory field with `name`, ready for the next level.
+    fn accept_dir(&mut self, name: &str) {
+        let parent = self.dir_parts().0.to_owned();
+        self.fields[0] = format!("{parent}{name}/");
+        self.pick = None;
+    }
+
+    /// Tab in the directory field: takes the highlighted completion, the
+    /// only one, or the matches' common start; highlights the first when
+    /// that adds nothing. False when there is nothing to complete, so tab
+    /// moves on.
+    fn complete_dir(&mut self) -> bool {
+        let matches: Vec<String> = self.dir_matches().into_iter().map(str::to_owned).collect();
+        let base = self.dir_parts().1.to_owned();
+        if let Some(name) = self.pick.and_then(|i| matches.get(i)) {
+            self.accept_dir(&name.clone());
+            return true;
+        }
+        if base.is_empty() || matches.is_empty() {
+            return false;
+        }
+        if let [only] = matches.as_slice() {
+            self.accept_dir(&only.clone());
+            return true;
+        }
+        let common = matches.iter().skip(1).fold(matches[0].clone(), |acc, m| {
+            let n = acc.chars().zip(m.chars()).take_while(|(a, b)| a == b).count();
+            acc.chars().take(n).collect()
+        });
+        if common.len() > base.len() {
+            self.fields[0].push_str(&common[base.len()..]);
+        } else {
+            self.pick = Some(0);
+        }
+        true
+    }
+}
+
+/// Lists the subdirectories of `dir` (a parent typed into the wizard, `~`
+/// for the home directory, relative to where scripts run), one per line.
+fn list_dirs_script(dir: &str) -> String {
+    let path = match dir.strip_prefix("~/") {
+        Some("") => "\"$HOME\"".to_owned(),
+        Some(rest) => format!("\"$HOME\"/{}", acc_core::shell::quote(rest)),
+        None if dir.is_empty() => ".".to_owned(),
+        None => acc_core::shell::quote(dir),
+    };
+    format!(
+        "cd {path} 2>/dev/null || exit 0\n\
+         for d in * .*; do\n\
+         case $d in .|..) continue;; esac\n\
+         [ -d \"$d\" ] && printf '%s\\n' \"$d\"\n\
+         done | head -n 2000\n"
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,6 +336,9 @@ impl Overlay {
             busy: false,
             error: None,
             resume: None,
+            dirs: Vec::new(),
+            dirs_for: None,
+            pick: None,
         })
     }
 
@@ -254,6 +347,7 @@ impl Overlay {
             Overlay::Launch(w) => {
                 if let Some(i) = w.text_field() {
                     w.fields[i].push_str(text);
+                    w.pick = None;
                 }
             }
             Overlay::Palette { query, .. } => query.push_str(text),
@@ -583,8 +677,21 @@ impl App {
                         keep = false;
                     }
                 } else {
+                    let completing = w.field == Wizard::DIR && !w.dir_matches().is_empty();
+                    let picks = w.dir_matches().len();
                     match key.code {
+                        KeyCode::Esc if w.pick.is_some() => w.pick = None,
                         KeyCode::Esc => keep = false,
+                        KeyCode::Tab if w.field == Wizard::DIR && w.complete_dir() => {}
+                        KeyCode::Down if completing => {
+                            w.pick = Some(w.pick.map_or(0, |i| (i + 1).min(picks - 1)))
+                        }
+                        KeyCode::Up if completing && w.pick.is_some() => {
+                            w.pick = w.pick.and_then(|i| i.checked_sub(1))
+                        }
+                        KeyCode::Enter if w.field == Wizard::DIR && w.pick.is_some() => {
+                            w.complete_dir();
+                        }
                         KeyCode::Tab | KeyCode::Down => w.field = (w.field + 1) % Wizard::FIELDS,
                         KeyCode::BackTab | KeyCode::Up => {
                             w.field = (w.field + Wizard::FIELDS - 1) % Wizard::FIELDS
@@ -640,6 +747,7 @@ impl App {
                             }
                         }
                         KeyCode::Backspace => {
+                            w.pick = None;
                             if let Some(i) = w.text_field() {
                                 if key.ctrl || key.alt {
                                     let t = w.fields[i].trim_end().to_owned();
@@ -651,11 +759,13 @@ impl App {
                             }
                         }
                         KeyCode::Char('u') if key.ctrl => {
+                            w.pick = None;
                             if let Some(i) = w.text_field() {
                                 w.fields[i].clear();
                             }
                         }
                         KeyCode::Char(c) if !key.ctrl && !key.alt => {
+                            w.pick = None;
                             if let Some(i) = w.text_field() {
                                 w.fields[i].push(c);
                             } else if w.field == 1
@@ -670,6 +780,7 @@ impl App {
                         }
                         _ => {}
                     }
+                    out.extend(self.wizard_list_dirs(w));
                 }
             }
             Overlay::Palette { query, selected } => {
@@ -975,6 +1086,45 @@ impl App {
             w.fields[1].clear();
         }
         w.harness = h;
+    }
+
+    /// Lists the directory being typed into the wizard on its host, unless
+    /// it already is.
+    pub(crate) fn wizard_list_dirs(&self, w: &mut Wizard) -> Vec<Effect> {
+        let parent = w.dir_parts().0.to_owned();
+        if w.busy
+            || w.dirs_for
+                .as_ref()
+                .is_some_and(|(h, p)| *h == w.host && *p == parent)
+        {
+            return Vec::new();
+        }
+        let Some(host) = self.hosts.get(w.host).map(|h| h.cfg.name.clone()) else {
+            return Vec::new();
+        };
+        w.dirs.clear();
+        w.pick = None;
+        let exec = acc_core::Exec::new(list_dirs_script(&parent));
+        w.dirs_for = Some((w.host, parent.clone()));
+        vec![self.run(&host, exec, ExecTag::ListDirs(parent))]
+    }
+
+    pub(crate) fn on_list_dirs(&mut self, host: &HostId, parent: &str, outcome: Result<ExecOutput, String>) {
+        let idx = self.hosts.iter().position(|h| &h.cfg.name == host);
+        let Some(Overlay::Launch(w)) = &mut self.overlay else {
+            return;
+        };
+        if w.dirs_for
+            .as_ref()
+            .is_none_or(|(h, p)| Some(*h) != idx || p != parent)
+        {
+            return;
+        }
+        let mut dirs: Vec<String> = outcome
+            .map(|o| o.stdout_text().lines().map(str::to_owned).collect())
+            .unwrap_or_default();
+        dirs.sort_by_key(|d| d.to_lowercase());
+        w.dirs = dirs;
     }
 
     fn wizard_submit(&mut self, w: &mut Wizard) -> Vec<Effect> {

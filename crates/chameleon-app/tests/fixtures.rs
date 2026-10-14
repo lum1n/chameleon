@@ -1099,3 +1099,68 @@ fn the_wizard_offers_the_models_a_session_reported() {
     assert_ne!(w.harness, Harness::Claude);
     assert!(w.fields[1].is_empty());
 }
+
+#[test]
+fn the_wizard_completes_directories_from_the_host() {
+    use chameleon_app::overlay::Overlay;
+    let mut a = app();
+    let dir = |a: &App| match a.overlay() {
+        Some(Overlay::Launch(w)) => w.fields[0].clone(),
+        _ => panic!("expected the wizard"),
+    };
+    let listed = |fx: &[Effect]| {
+        fx.iter().find_map(|e| match e {
+            Effect::Run {
+                tag: ExecTag::ListDirs(p),
+                ..
+            } => Some(p.clone()),
+            _ => None,
+        })
+    };
+    let answer = |a: &mut App, parent: &str, out: &str| {
+        a.handle(
+            AppEvent::ExecDone {
+                host: "local".into(),
+                tag: ExecTag::ListDirs(parent.into()),
+                result: ok(out),
+            },
+            1,
+        );
+    };
+    a.handle(ctrl('n'), 1);
+    a.handle(ctrl('u'), 1);
+    let mut fx = Vec::new();
+    for c in "~/re".chars() {
+        fx.extend(a.handle(ch(c), 1));
+    }
+    assert_eq!(listed(&fx).as_deref(), Some("~/"));
+    answer(&mut a, "~/", "repos\nrecipes\n.config\nDocuments\n");
+
+    // Two match: tab takes their common start, then highlights the first.
+    a.handle(press(KeyCode::Tab), 1);
+    assert_eq!(dir(&a), "~/re");
+    let text = overlay_text(&mut a).join("\n");
+    assert!(
+        text.contains("repos/") && text.contains("recipes/") && !text.contains(".config"),
+        "{text}"
+    );
+    a.handle(press(KeyCode::Down), 1);
+    a.handle(press(KeyCode::Down), 1);
+    let fx = a.handle(press(KeyCode::Enter), 1);
+    assert_eq!(dir(&a), "~/repos/");
+    assert_eq!(listed(&fx).as_deref(), Some("~/repos/"));
+    answer(&mut a, "~/repos/", "chameleon\n");
+
+    // One match: tab completes it.
+    a.handle(ch('c'), 1);
+    a.handle(press(KeyCode::Tab), 1);
+    assert_eq!(dir(&a), "~/repos/chameleon/");
+
+    // Nothing to complete: tab moves on to the model.
+    answer(&mut a, "~/repos/chameleon/", "");
+    a.handle(press(KeyCode::Tab), 1);
+    let Some(Overlay::Launch(w)) = a.overlay() else {
+        panic!("expected the wizard");
+    };
+    assert_eq!(w.field, 3);
+}

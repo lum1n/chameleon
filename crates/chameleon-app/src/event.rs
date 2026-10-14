@@ -24,6 +24,8 @@ pub enum ExecTag {
     Probe,
     /// Resolving the working directory typed into the launch wizard.
     ResolveDir,
+    /// Listing a directory's subdirectories for the wizard's completions.
+    ListDirs(String),
     Input(String),
     Kill(String),
     Remove(String),

@@ -197,11 +197,12 @@ pub enum Action {
     PrevAgent,
     ToggleSidebar,
     Theme,
+    Blocks,
     Jump(u8),
 }
 
 impl Action {
-    pub const ALL: [Action; 35] = [
+    pub const ALL: [Action; 36] = [
         Action::Quit,
         Action::Help,
         Action::SelectUp,
@@ -236,6 +237,7 @@ impl Action {
         Action::PrevAgent,
         Action::ToggleSidebar,
         Action::Theme,
+        Action::Blocks,
         Action::Jump(0),
     ];
 
@@ -293,6 +295,7 @@ impl Action {
             Action::PrevAgent => "view the previous subagent",
             Action::ToggleSidebar => "show / hide the session list",
             Action::Theme => "colour theme",
+            Action::Blocks => "transcript block style",
             Action::Jump(_) => "jump to session 1-9, 0",
         }
     }
@@ -373,6 +376,7 @@ impl Default for Keymap {
             (Key::char('['), Action::PrevAgent),
             (Key::char('b'), Action::ToggleSidebar),
             (Key::char('T'), Action::Theme),
+            (Key::char('B'), Action::Blocks),
             (Key::char('h'), Action::FocusSidebar),
             (Key::char('l'), Action::FocusTranscript),
         ];

@@ -973,6 +973,35 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
             ));
         }
         lines.push(l);
+        let dirs = w.dir_matches();
+        if field == Wizard::DIR && focused && !dirs.is_empty() {
+            const SHOWN: usize = 8;
+            let start = w
+                .pick
+                .map_or(0, |i| i.saturating_sub(SHOWN / 2))
+                .min(dirs.len().saturating_sub(SHOWN));
+            let end = (start + SHOWN).min(dirs.len());
+            let mut m = padded(Line::raw(" ".repeat(2 + LABEL)));
+            if start > 0 {
+                m.push(Span::new(format!("+{start} … "), muted));
+            }
+            for (i, d) in dirs.iter().enumerate().take(end).skip(start) {
+                m.push(chip(&format!("{d}/"), w.pick == Some(i), true));
+                m.push(Span::raw(" "));
+            }
+            if end < dirs.len() {
+                m.push(Span::new(format!("… +{} ", dirs.len() - end), muted));
+            }
+            m.push(Span::new(
+                if w.pick.is_some() {
+                    " tab/enter take"
+                } else {
+                    " tab ↓"
+                },
+                muted,
+            ));
+            lines.extend(wrap_hang(&m, width + PAD.len(), &hang));
+        }
         if field == 3 && focused && !models.is_empty() {
             // Long lists show a window around the pick.
             const SHOWN: usize = 8;

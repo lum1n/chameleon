@@ -589,6 +589,14 @@ impl App {
                 self.overlay = Some(Overlay::themes(self));
                 Vec::new()
             }
+            Action::Blocks => {
+                self.cfg.general.blocks = self.cfg.general.blocks.next();
+                for s in &mut self.slots {
+                    s.wrap.clear();
+                }
+                self.toast(format!("blocks: {}", self.cfg.general.blocks.name()), false);
+                Vec::new()
+            }
             Action::ToggleSidebar => {
                 self.sidebar_shown = !self.sidebar_shown;
                 if !self.sidebar_shown && self.focus == Pane::Sidebar {
@@ -631,8 +639,13 @@ impl App {
                 Vec::new()
             }
             Action::NewSession => {
-                self.overlay = Some(Overlay::launch(self));
-                Vec::new()
+                let mut overlay = Overlay::launch(self);
+                let out = match &mut overlay {
+                    Overlay::Launch(w) => self.wizard_list_dirs(w),
+                    _ => Vec::new(),
+                };
+                self.overlay = Some(overlay);
+                out
             }
             Action::Refresh => {
                 let mut out = Vec::new();

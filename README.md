@@ -46,10 +46,11 @@ Rust 1.88 or newer. The optional Lua runtime needs `--features lua`.
 
 | Key | Does |
 |---|---|
-| `n` / `ctrl-n` | start a session: host, harness, directory, model, permission, first prompt |
+| `n` / `ctrl-n` | start a session: host, harness, directory, model, permission, first prompt. The directory completes from the host: `tab` completes, `↓` `↑` pick, `enter` takes |
 | `j` `k` `1`-`0` | pick a session; in the transcript, move between items |
 | `b` / `ctrl-b` | show or hide the session list (`h` brings it back too) |
 | `T` | colour theme: previews as you move, `enter` keeps it across restarts |
+| `B` | transcript blocks: coloured bars, boxed messages, or plain |
 | `enter` | attach to a session, or focus the prompt |
 | typing | starts a prompt; `enter` sends, `alt-enter` adds a line |
 | `/` | command palette: the harness's slash commands, chameleon actions, hooks. Commands that take a value (`/model`, `/mode`) open a picker, dialogs (`/mcp`, `/status`) open a panel with their actions, and TUI-only ones (`/doctor`) hand the terminal to the harness |
@@ -79,6 +80,7 @@ auto_attach = true     # follow every alive session found on a host
 show_sidebar = true    # start with the session list open (b toggles it)
 sidebar_width = 34
 default_harness = "claude-code"
+blocks = "bars"         # how messages are set apart: bars, cards, plain (B cycles)
 
 [[hosts]]
 name = "local"         # this machine (implied when no hosts are listed)

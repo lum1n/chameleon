@@ -12,7 +12,7 @@ use acc_core::event::ItemKind;
 use acc_core::item::{FileDiff, ItemDetail, LineTag};
 use acc_core::transcript::{Item, ItemStatus};
 
-use crate::config::Theme;
+use crate::config::{Blocks, Theme};
 use crate::markdown::{self, MdStyle};
 use crate::model::{App, Pane};
 use crate::slot::Phase;
@@ -56,6 +56,7 @@ pub fn build(app: &mut App, rect: Rect) -> PaneView {
         w,
         spin,
         cwd: &session.spec().cwd,
+        blocks: app.cfg.general.blocks,
     };
     let items = session.transcript().items();
     let cursor = slot.cursor.filter(|c| *c < items.len());
@@ -297,6 +298,10 @@ pub(crate) fn card(
         l.push(Span::new(" │", rule));
         out.push(l);
     }
+    if footer.is_empty() {
+        out.push(Line::styled(format!("╰{}╯", "─".repeat(w - 2)), rule));
+        return out;
+    }
     out.push(Line::new(vec![
         Span::new(
             format!("╰{} ", "─".repeat(w.saturating_sub(width(&footer) + 5))),
@@ -401,6 +406,7 @@ pub struct ItemCtx<'a> {
     pub spin: &'a str,
     /// The session's directory, trimmed from paths and commands.
     pub cwd: &'a str,
+    pub blocks: Blocks,
 }
 
 /// How one item is shown; part of its cache key.
@@ -529,18 +535,28 @@ pub fn render_item(item: &Item, look: Look, ctx: &ItemCtx) -> Vec<Line> {
     // The cursor's item gets a marker.
     let cw = ctx.w.saturating_sub(usize::from(look.selected)).max(8);
     let muted = Style::new().fg(theme.muted);
+    // What sets the block apart: a bar in front of each line (with the
+    // columns it takes) or a box around it.
+    let (bar, boxed) = match (ctx.blocks, item.kind) {
+        (Blocks::Cards, ItemKind::UserMessage) => (None, Some(("you", theme.user))),
+        (Blocks::Cards, ItemKind::AgentMessage) => (None, Some((ctx.harness.display_name(), theme.border))),
+        (_, ItemKind::UserMessage) => (Some(Span::new("▎ ", Style::new().fg(theme.user).bold())), None),
+        (Blocks::Bars, ItemKind::AgentMessage) => {
+            (Some(Span::new("▎ ", Style::new().fg(theme.accent))), None)
+        }
+        (Blocks::Plain, _) => (None, None),
+        _ => (Some(Span::new("│ ", Style::new().fg(theme.border))), None),
+    };
+    let cw = match (&bar, boxed) {
+        (Some(b), _) => cw.saturating_sub(width(&b.text)).max(8),
+        (None, Some(_)) => cw.saturating_sub(4).max(8),
+        (None, None) => cw,
+    };
     let mut out: Vec<Line> = Vec::new();
     match item.kind {
         ItemKind::UserMessage => {
-            let bar = Line::styled("▎ ", Style::new().fg(theme.user).bold());
-            let text = item.text.trim_end();
-            for l in text.lines() {
-                let mut line = bar.clone();
-                line.push(Span::new(l, Style::new().fg(theme.user)));
-                out.extend(wrap_hang(&line, cw, &bar));
-            }
-            if out.is_empty() {
-                out.push(bar);
+            for l in item.text.trim_end().lines() {
+                out.extend(wrap_line(&Line::styled(l, Style::new().fg(theme.user)), cw, ""));
             }
         }
         ItemKind::AgentMessage => {
@@ -574,6 +590,18 @@ pub fn render_item(item: &Item, look: Look, ctx: &ItemCtx) -> Vec<Line> {
         ItemKind::ToolCall | ItemKind::CommandExecution | ItemKind::FileChange | ItemKind::Subagent => {
             out.extend(step(item, look, ctx, cw));
         }
+    }
+    if item.kind == ItemKind::UserMessage && out.is_empty() {
+        out.push(Line::default());
+    }
+    if let Some(bar) = bar {
+        for l in &mut out {
+            l.spans.insert(0, bar.clone());
+        }
+    } else if let Some((title, tone)) = boxed
+        && !out.is_empty()
+    {
+        out = card(out, title, "", tone, theme.muted, cw + 4);
     }
     for l in &mut out {
         if look.selected {

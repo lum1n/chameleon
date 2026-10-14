@@ -206,6 +206,10 @@ impl App {
                 Vec::new()
             }
             ExecTag::ResolveDir => self.on_resolve_dir(host, outcome),
+            ExecTag::ListDirs(parent) => {
+                self.on_list_dirs(host, &parent, outcome);
+                Vec::new()
+            }
             ExecTag::Input(id) => {
                 if let Err(e) = outcome {
                     let key = SessionKey::new(host, &id);

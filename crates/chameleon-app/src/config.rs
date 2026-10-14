@@ -52,6 +52,40 @@ pub struct General {
     pub show_sidebar: bool,
     /// Default harness in the launch wizard (`claude-code`, `codex`, ...).
     pub default_harness: Option<String>,
+    /// How the transcript sets messages apart; `B` cycles it.
+    #[serde(default)]
+    pub blocks: Blocks,
+}
+
+/// How the transcript marks where one message ends and the next begins.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Blocks {
+    /// A coloured bar down the left of every message and run of steps.
+    #[default]
+    Bars,
+    /// Messages in rounded boxes, steps behind a bar.
+    Cards,
+    /// Only the user's messages are marked.
+    Plain,
+}
+
+impl Blocks {
+    pub fn next(self) -> Self {
+        match self {
+            Blocks::Bars => Blocks::Cards,
+            Blocks::Cards => Blocks::Plain,
+            Blocks::Plain => Blocks::Bars,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Blocks::Bars => "bars",
+            Blocks::Cards => "cards",
+            Blocks::Plain => "plain",
+        }
+    }
 }
 
 fn d_tick() -> u64 {
@@ -81,6 +115,7 @@ impl Default for General {
             sidebar_width: d_sidebar(),
             show_sidebar: true,
             default_harness: None,
+            blocks: Blocks::default(),
         }
     }
 }

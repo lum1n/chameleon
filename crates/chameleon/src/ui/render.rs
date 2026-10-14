@@ -322,7 +322,7 @@ mod tests {
             rows[2]
         );
         assert!(
-            rows[2][..].contains("│ hi"),
+            rows[2][..].contains("│ ▎ hi"),
             "the transcript starts after the rule: {:?}",
             rows[2]
         );
