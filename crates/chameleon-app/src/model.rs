@@ -719,17 +719,17 @@ impl App {
         }
     }
 
-    /// Session keys in sidebar order.
+    /// Session keys in sidebar order: oldest first, so a session keeps its
+    /// row (and its jump key) until one above it is deleted.
     pub(crate) fn sidebar_keys(&self) -> Vec<SessionKey> {
         let mut keys = Vec::new();
         for h in &self.hosts {
             let mut slots: Vec<&Slot> = self.slots.iter().filter(|s| s.key.host == h.cfg.name).collect();
             slots.sort_by(|a, b| {
-                a.urgency()
-                    .cmp(&b.urgency())
-                    .then_with(|| b.last_live_ms.cmp(&a.last_live_ms))
-                    .then_with(|| b.modified.cmp(&a.modified))
-                    .then_with(|| b.spec.created_ms.cmp(&a.spec.created_ms))
+                a.spec
+                    .created_ms
+                    .cmp(&b.spec.created_ms)
+                    .then_with(|| a.key.id.cmp(&b.key.id))
             });
             keys.extend(slots.into_iter().map(|s| s.key.clone()));
         }

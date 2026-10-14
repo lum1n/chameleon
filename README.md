@@ -64,8 +64,8 @@ Rust 1.88 or newer. The optional Lua runtime needs `--features lua`.
 | `r` | re-list sessions on every host |
 | `?` | help, with your bindings and config problems |
 
-Every key is remappable. Sessions are sorted by urgency: waiting for you first, then errors,
-working, idle, done, exited.
+Every key is remappable. Sessions are listed oldest first and keep their place, so a
+session's jump key (`1`–`0`) stays the same until a session above it is deleted.
 
 ## Configure
 

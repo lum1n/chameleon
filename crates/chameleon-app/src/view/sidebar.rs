@@ -1,4 +1,4 @@
-//! The session list, grouped by host and sorted by urgency.
+//! The session list, grouped by host, oldest session first.
 //!
 //! ```text
 //!  local ──────── 3
