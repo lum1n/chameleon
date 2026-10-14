@@ -234,6 +234,17 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// The status bar: raised a step further than the surface, away from
+    /// the screen, so it stands apart from the composer's dock.
+    pub fn status_bg(&self) -> Color {
+        self.bg.mix(self.surface, 2.0).unwrap_or(self.surface)
+    }
+
+    /// Behind the selected session: a wash of the accent.
+    pub fn selection(&self) -> Color {
+        self.bg.mix(self.accent, 0.16).unwrap_or(Color::Reset)
+    }
+
     /// The named theme (or the terminal's colours), then the overrides.
     pub fn from_config(
         c: &ThemeConfig,

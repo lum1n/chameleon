@@ -174,9 +174,12 @@ pub fn draw(frame: &mut Frame, screen: &Screen, theme: &Theme) {
     // The theme's screen, then raised bands for the header and status bar.
     frame.render_widget(Block::default().style(base(theme, theme.bg)), full);
     if theme.surface != Color::Reset {
-        let band = Block::default().style(base(theme, theme.surface));
-        frame.render_widget(band.clone(), RRect::new(0, 0, full.width, 1));
-        frame.render_widget(band, RRect::new(0, full.height - 1, full.width, 1));
+        let band = |bg| Block::default().style(base(theme, bg));
+        frame.render_widget(band(theme.surface), RRect::new(0, 0, full.width, 1));
+        frame.render_widget(
+            band(theme.status_bg()),
+            RRect::new(0, full.height - 1, full.width, 1),
+        );
     }
     row(frame, 0, 0, &screen.header);
     for p in &screen.chrome {
@@ -456,11 +459,22 @@ mod tests {
         term.draw(|f| draw(f, &screen, &previewing)).unwrap();
         let buf = term.backend().buffer().clone();
         assert_eq!(
-            buf[(0, 5)].bg,
+            buf[(0, h - 4)].bg,
             color(previewing.bg),
             "the screen takes the theme's background"
         );
         assert_eq!(buf[(0, 0)].bg, color(previewing.surface), "the header is raised");
+        assert_eq!(
+            buf[(0, h - 1)].bg,
+            color(previewing.status_bg()),
+            "the status bar stands apart from the surface"
+        );
+        assert_ne!(previewing.status_bg(), previewing.surface);
+        assert_eq!(
+            buf[(0, 4)].bg,
+            color(previewing.selection()),
+            "the selected session is washed"
+        );
         let rows: Vec<String> = (0..h)
             .map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_owned()).collect())
             .collect();

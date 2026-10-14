@@ -46,6 +46,20 @@ impl Color {
             _ => return None,
         })
     }
+
+    /// `self` moved `t` (0..=1, or past 1 to overshoot) of the way to
+    /// `other`; only RGB colours mix.
+    pub fn mix(self, other: Color, t: f32) -> Option<Color> {
+        let (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) = (self, other) else {
+            return None;
+        };
+        let m = |a: u8, b: u8| {
+            (f32::from(a) + (f32::from(b) - f32::from(a)) * t)
+                .round()
+                .clamp(0.0, 255.0) as u8
+        };
+        Some(Color::Rgb(m(r1, r2), m(g1, g2), m(b1, b2)))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

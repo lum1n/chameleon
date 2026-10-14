@@ -1,11 +1,13 @@
 //! The session list, grouped by host, oldest session first.
 //!
 //! ```text
-//!  local ──────── 3
-//! ▌1 ⚠ fix the te…  claude
-//!      …/repos/sessh
-//!  2 ⠋ bump deps     codex
-//!      ~/acc
+//!   local ─────────── 3
+//!
+//! ▌ 1 ⚠ fix the te…  claude      the selected one on a wash of the accent
+//! ▌     …/repos/sessh
+//!
+//!   2 ⠋ bump deps     codex
+//!       ~/acc
 //! ```
 
 use crate::model::{App, FeedStatus, Pane};
@@ -24,11 +26,8 @@ pub fn build(app: &App, rect: Rect) -> PaneView {
     let mut index = 0usize;
     let keys = app.sidebar_keys();
     let mut sel = None;
-    for (hi, host) in app.hosts.iter().enumerate() {
-        if hi > 0 {
-            lines.push(Line::default());
-            hits.push(None);
-        }
+    // Hosts follow each other after the blank row closing every session.
+    for host in &app.hosts {
         // "name ──── n": the host as a section rule.
         let n = keys.iter().filter(|k| k.host == host.cfg.name).count();
         let tail = match &host.feed {
@@ -38,14 +37,16 @@ pub fn build(app: &App, rect: Rect) -> PaneView {
             _ => Span::new(n.to_string(), muted),
         };
         let name = truncate(&host.cfg.name, w.saturating_sub(5 + width(&tail.text)));
-        let fill = w.saturating_sub(width(&name) + width(&tail.text) + 3);
+        let fill = w.saturating_sub(width(&name) + width(&tail.text) + 4);
         let mut head = Line::new(vec![
-            Span::raw(" "),
+            Span::raw("  "),
             Span::new(name, Style::new().bold().fg(theme.accent)),
             Span::new(format!(" {} ", "─".repeat(fill)), muted),
         ]);
         head.push(tail);
         lines.push(head);
+        hits.push(None);
+        lines.push(Line::default());
         hits.push(None);
         if let Some(e) = &host.error {
             let last = e.lines().last().unwrap_or(e).trim();
@@ -88,14 +89,23 @@ pub fn build(app: &App, rect: Rect) -> PaneView {
             } else {
                 " ".into()
             };
-            let marker = if is_sel {
-                Span::new("▌", Style::new().fg(theme.accent))
+            let bar = if !is_sel {
+                Span::raw("  ")
+            } else if focused {
+                Span::new("▌ ", Style::new().fg(theme.accent))
             } else {
-                Span::raw(" ")
+                Span::new("▌ ", Style::new().fg(theme.border))
             };
             let mut line = Line::new(vec![
-                marker,
-                Span::new(num, muted),
+                bar.clone(),
+                Span::new(
+                    num,
+                    if is_sel {
+                        Style::new().fg(theme.accent).bold()
+                    } else {
+                        muted
+                    },
+                ),
                 Span::new(format!(" {glyph} "), Style::new().fg(color).bold()),
             ]);
             let harness = slot.harness().program();
@@ -104,7 +114,7 @@ pub fn build(app: &App, rect: Rect) -> PaneView {
             } else {
                 format!(" {harness}")
             };
-            let used = 5 + width(&right);
+            let used = 6 + width(&right) + 1;
             let title_w = w.saturating_sub(used);
             let dead = matches!(urgency, Urgency::Exited) || slot.phase == Phase::Listed && !slot.is_alive();
             let mut title_style = Style::new();
@@ -121,38 +131,49 @@ pub fn build(app: &App, rect: Rect) -> PaneView {
                 right,
                 Style::new().fg(if slot.attention { theme.accent } else { theme.muted }),
             ));
-            lines.push(line);
-            hits.push(Some(key.clone()));
+            let mut rows = vec![line];
             // Where it runs, under the title: the last directories count most.
             let cwd = slot.spec.cwd.trim_end_matches('/');
             if !cwd.is_empty() {
-                lines.push(Line::styled(
-                    format!("     {}", truncate_path(cwd, w.saturating_sub(6))),
-                    muted,
-                ));
+                rows.push(Line::new(vec![
+                    bar.clone(),
+                    Span::new(format!("    {}", truncate_path(cwd, w.saturating_sub(8))), muted),
+                ]));
+            }
+            for mut row in rows {
+                if is_sel {
+                    wash(&mut row, w, theme.selection());
+                }
+                lines.push(row);
                 hits.push(Some(key.clone()));
             }
+            lines.push(Line::default());
+            hits.push(None);
         }
     }
     if keys.is_empty() {
         lines.push(Line::default());
-        lines.push(Line::styled(" no sessions yet", muted));
+        lines.push(Line::styled("  no sessions yet", muted));
         lines.push(Line::default());
         lines.push(Line::new(vec![
-            Span::new(" n", Style::new().fg(theme.accent)),
+            Span::new("  n", Style::new().fg(theme.accent)),
             Span::new("  start one", muted),
         ]));
         lines.push(Line::new(vec![
-            Span::new(" r", Style::new().fg(theme.accent)),
+            Span::new("  r", Style::new().fg(theme.accent)),
             Span::new("  refresh", muted),
         ]));
         hits.extend(std::iter::repeat_n(None, 5));
     }
-    // Keep the selection, and the path under it, in view.
+    // Keep the selection, the path under it and the air after, in view.
     let h = rect.h as usize;
     let mut offset = 0;
     if let Some(s) = sel {
-        let last = if hits.get(s + 1) == hits.get(s) { s + 1 } else { s };
+        let last = if hits.get(s + 1) == hits.get(s) {
+            s + 2
+        } else {
+            s + 1
+        };
         if last >= h {
             offset = last + 1 - h;
         }
@@ -167,5 +188,14 @@ pub fn build(app: &App, rect: Rect) -> PaneView {
         scrollbar: None,
         hits,
         bg: None,
+    }
+}
+
+/// Paints `line` `w` wide on `bg`.
+fn wash(line: &mut Line, w: usize, bg: Color) {
+    let pad = w.saturating_sub(line.width());
+    line.push(Span::raw(" ".repeat(pad)));
+    for span in &mut line.spans {
+        span.style.bg = bg;
     }
 }
