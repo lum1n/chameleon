@@ -6,6 +6,8 @@
 //!
 //! `REPLAY_KEYS` types keys before rendering, space-separated as in the
 //! config (`REPLAY_KEYS="alt-2 k k enter"`); an open overlay is printed too.
+//! `REPLAY_LIVE=<bytes>` feeds the log's first bytes as history and the rest
+//! as live output.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -23,6 +25,10 @@ fn main() {
     let height: u16 = args.get(3).and_then(|h| h.parse().ok()).unwrap_or(40);
     let harness = chameleon_app::overlay::parse_harness(harness).expect("known harness");
     let log = std::fs::read(path).expect("readable log");
+    let history = std::env::var("REPLAY_LIVE")
+        .ok()
+        .and_then(|n| n.parse::<usize>().ok())
+        .unwrap_or(log.len());
 
     let mut app = App::new(Config::default(), "replay");
     app.handle(AppEvent::Resize { width, height }, 0);
@@ -34,7 +40,7 @@ fn main() {
     // Go through the same path the wizard takes.
     let (session, _) = acc_core::session::Session::launch(req, "replay-1", "replay", 0).unwrap();
     let spec = session.spec().to_json();
-    let list = format!("S\treplay-1\talive 1 {}\t0\nJ\t{spec}\n", log.len());
+    let list = format!("S\treplay-1\talive 1 {history}\t0\nJ\t{spec}\n");
     let fx = app.handle(
         AppEvent::ExecDone {
             host: "local".into(),
@@ -60,7 +66,7 @@ fn main() {
             tag: ExecTag::Status("replay-1".into()),
             result: Ok(ExecOutput {
                 status: Some(0),
-                stdout: format!("alive 1 {}\n", log.len()).into_bytes(),
+                stdout: format!("alive 1 {history}\n").into_bytes(),
                 stderr: Vec::new(),
             }),
         },
