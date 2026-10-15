@@ -49,7 +49,7 @@ impl Host for SshHost {
     }
 
     fn kills_group(&self) -> bool {
-        // Killing the local ssh hangs up the remote shell, whose trap stops its followers.
+        // Killing the local ssh ends the remote shell's stdin, which stops its followers.
         false
     }
 }
