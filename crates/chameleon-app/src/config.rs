@@ -21,6 +21,15 @@ pub struct Config {
     pub theme: ThemeConfig,
     #[serde(default)]
     pub hooks: Vec<HookConfig>,
+    /// Allow and deny rules chameleon answers approvals with, on every
+    /// harness (`[[policy]]`: `decision`, and any of `tool`, `path`,
+    /// `command`). Deny wins; what no rule matches is left to you.
+    #[serde(default)]
+    pub policy: Vec<acc_core::policy::Rule>,
+    /// Record the moments worth knowing about (an approval waiting, a turn
+    /// done, an error, the exit) on the host of every session started
+    /// here, even while chameleon is closed, and run a hook for each.
+    pub watch: Option<WatchConfig>,
     /// Themes from `themes/*.json` next to the config, loaded by the binary.
     #[serde(skip)]
     pub custom_themes: Vec<crate::themes::ThemeDef>,
@@ -292,6 +301,33 @@ impl Theme {
     }
 }
 
+/// `[watch]`: what the host runs for each event of a session's watcher.
+/// Neither: the events are only recorded (`events.ndjson`).
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct WatchConfig {
+    /// Run with `sh -c` on the session's host, the event's JSON on stdin,
+    /// `ACC_SESSION` and `ACC_STATE` set.
+    pub command: Option<String>,
+    /// Posted the event as JSON, from the session's host.
+    pub url: Option<String>,
+}
+
+impl WatchConfig {
+    /// The hook, or a problem when both are given.
+    pub fn hook(&self) -> Result<Option<acc_core::watch::Hook>, String> {
+        use acc_core::watch::Hook;
+        match (&self.command, &self.url) {
+            (Some(_), Some(_)) => Err("[watch] takes a command or a url, not both".into()),
+            (Some(command), None) => Ok(Some(Hook::Command {
+                command: command.clone(),
+            })),
+            (None, Some(url)) => Ok(Some(Hook::Webhook { url: url.clone() })),
+            (None, None) => Ok(None),
+        }
+    }
+}
+
 /// A shell command run on this machine for an event or a key.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -368,6 +404,15 @@ name = "edit"
 key = "ctrl-o"
 command = "$EDITOR"
 suspend_tui = true
+[watch]
+url = "https://example.com/hook"
+[[policy]]
+decision = "allow"
+tool = "shell"
+command = "git status"
+[[policy]]
+decision = "deny"
+path = "**/.env"
 "##,
         )
         .expect("parses");
@@ -379,6 +424,13 @@ suspend_tui = true
         assert_eq!(t.accent, Color::Rgb(255, 0, 255));
         assert!(problems.is_empty());
         assert!(c.hooks[1].suspend_tui);
+        assert_eq!(c.policy.len(), 2);
+        assert!(matches!(
+            c.watch.as_ref().map(WatchConfig::hook),
+            Some(Ok(Some(acc_core::watch::Hook::Webhook { .. })))
+        ));
+        assert_eq!(c.policy[0].command.as_deref(), Some("git status"));
+        assert_eq!(c.policy[1].decision, acc_core::policy::Decision::Deny);
     }
 
     #[test]

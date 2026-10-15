@@ -46,7 +46,7 @@ Rust 1.88 or newer. The optional Lua runtime needs `--features lua`.
 
 | Key | Does |
 |---|---|
-| `n` / `ctrl-n` | start a session: host, harness, directory, model, permission, first prompt. The directory completes from the host: `tab` completes, `↓` `↑` pick, `enter` takes |
+| `n` / `ctrl-n` | start a session: host, harness, directory, worktree, model, permission, first prompt. The directory completes from the host: `tab` completes, `↓` `↑` pick, `enter` takes. With a worktree, the session works in a git worktree of its own (`~/.acc/w/<id>`, branch `acc/<id>`), so several agents can share a repository. A harness older than acc was tested with is flagged |
 | `j` `k` `1`-`0` | pick a session; in the transcript, move between items |
 | `ctrl-j` `ctrl-k` / `ctrl-h` `ctrl-l` | in every list, picker and form (the palette and launcher too): down / up and change a choice, even while typing. Plain `hjkl` and `g` `G` where nothing is typed |
 | `b` / `ctrl-b` | show or hide the session list (`h` brings it back too) |
@@ -55,12 +55,15 @@ Rust 1.88 or newer. The optional Lua runtime needs `--features lua`.
 | `enter` | attach to a session, or focus the prompt |
 | typing | starts a prompt; `enter` sends, `alt-enter` adds a line |
 | `/` | command palette: the harness's slash commands, chameleon actions, hooks. Commands that take a value (`/model`, `/mode`) open a picker, dialogs (`/mcp`, `/status`) open a panel with their actions, and TUI-only ones (`/doctor`) hand the terminal to the harness |
-| `y` / `N` | approve or deny the open request (`N` opens the card with the denial selected) |
+| `y` / `N` | approve once or deny the open request (`N` opens the card with the denial selected) |
 | `o` | model, effort, mode, permission (as the harness reports them) |
 | `space` | expand or collapse the item under the cursor (reasoning, output, diffs) |
 | `enter` / `esc` | on a subagent step, open its conversation; `esc` goes back to where you were |
 | `[` `]` / `a` | step through main and every subagent run / pick one from a list, running ones spinning |
-| `d` | the diff viewer: the repository's uncommitted changes on the session's host (untracked files too), or with `s` every edit the agent made this session, merged per file. `n`/`p` file, `]`/`[` hunk, `r` reload. On an edit step it opens on that file |
+| `d` | the diff viewer: the repository's uncommitted changes on the session's host (untracked files too; for a worktree session, everything it changed there, commits included), or with `s` every edit the agent made this session, merged per file. `n`/`p` file, `]`/`[` hunk, `r` reload. On an edit step it opens on that file |
+| `M` / palette | worktree sessions: commit the changes and squash-merge them into the branch checked out in the repository (`M` in the diff viewer too). A conflict merges nothing. "discard the session's worktree" (or `X` in the diff viewer) stops the harness and deletes the worktree and its branch |
+| `H` | hand the conversation to another harness: it starts on the same directory (and worktree), primed with the conversation so far; a prompt you have typed goes as the next message. The first session keeps running |
+| `U` | usage: what sessions spent, per account (with its quota windows) and per local day, as the harnesses reported it. Kept across restarts in `~/.local/state/chameleon/usage.json` |
 | `ctrl-c` `c` `f` | interrupt, compact, fork |
 | `x` / `D` | stop the harness / stop and delete the session |
 | `r` | re-list sessions on every host |
@@ -112,7 +115,23 @@ name = "edit"
 key = "ctrl-o"
 command = 'cd "$CHAM_CWD" && $EDITOR'
 suspend_tui = true     # hand the terminal to the command
+
+[[policy]]             # answer approvals without asking, on every harness
+decision = "allow"
+tool = "shell"         # the harness's tool name, or shell, edit, read, fetch, mcp
+command = "git status" # a command's start, whole words; never matches chained commands
+
+[[policy]]
+decision = "deny"      # deny wins over allow; what no rule matches is left to you
+path = "**/.env"       # files the tool acts on, relative to the session's directory
+
+[watch]                # on the host of every session started here, even with chameleon
+url = "https://ntfy.sh/my-topic"  # closed: post each approval waiting, turn done, error
+# command = "..."      # and exit, or run a command there (event JSON on stdin)
 ```
+
+The policy answers for every session chameleon attaches to, and says so in a toast. Set it in
+one client only (not Sessh as well), or both answer the same request.
 
 ## Themes
 

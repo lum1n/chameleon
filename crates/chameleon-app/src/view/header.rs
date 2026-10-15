@@ -37,7 +37,11 @@ pub fn build(app: &App, w: usize) -> Line {
             let room = w
                 .saturating_sub(width(&line.text()) + width(&right.text()) + 1)
                 .max(8);
-            let mut detail = format!("{} · {}", slot.spec.cwd, slot.harness().display_name());
+            let place = match &slot.spec.worktree {
+                Some(name) => format!("⎇ {}", acc_core::worktree::branch(name)),
+                None => slot.spec.cwd.clone(),
+            };
+            let mut detail = format!("{place} · {}", slot.harness().display_name());
             if let Some(m) = &slot.spec.model {
                 detail.push_str(&format!(" · {m}"));
             }

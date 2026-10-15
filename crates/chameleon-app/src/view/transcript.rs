@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use acc_core::Harness;
-use acc_core::event::ItemKind;
+use acc_core::event::{ItemKind, PermissionOption};
 use acc_core::item::{FileDiff, ItemDetail, LineTag};
 use acc_core::transcript::{Item, ItemStatus};
 
@@ -247,10 +247,7 @@ fn pending_lines(session: &acc_core::session::Session, theme: &Theme, w: usize) 
                 opts.push(Span::raw("   "));
             }
             opts.push(Span::new(format!("{} ", i + 1), Style::new().fg(theme.muted)));
-            opts.push(Span::new(
-                o.label.clone(),
-                Style::new().fg(option_tone(&o.id, &o.label, theme)),
-            ));
+            opts.push(Span::new(o.label.clone(), Style::new().fg(option_tone(o, theme))));
         }
         body.extend(wrap_line(&opts, cw, ""));
         let steps = crate::overlay::steps(p);
@@ -386,10 +383,18 @@ pub(crate) fn json_lines(v: &serde_json::Value, style: Style) -> Vec<Line> {
 }
 
 /// The colour of a request's answer: denials in red, standing grants in
-/// the accent, one-off grants in green.
-pub(crate) fn option_tone(id: &str, label: &str, theme: &Theme) -> Color {
-    let l = label.to_ascii_lowercase();
-    if crate::overlay::is_denial(id, label) {
+/// the accent, one-off grants in green. By what the harness says the
+/// option does, else by its words.
+pub(crate) fn option_tone(o: &PermissionOption, theme: &Theme) -> Color {
+    use acc_core::event::PermissionOptionKind as K;
+    match o.kind {
+        Some(K::RejectOnce | K::RejectAlways) => return theme.error,
+        Some(K::AllowAlways) => return theme.accent,
+        Some(K::AllowOnce) => return theme.done,
+        None => {}
+    }
+    let l = o.label.to_ascii_lowercase();
+    if crate::overlay::is_denial(&o.id, &o.label) {
         theme.error
     } else if l.contains("always") || l.contains("session") || l.contains("don't ask") {
         theme.accent

@@ -1,6 +1,8 @@
 //! The diff viewer: what changed in a session's repository (`git diff`
-//! against HEAD, untracked files included, run on the session's host) or
-//! everything the agent edited in this session, merged per file.
+//! against HEAD, untracked files included, run on the session's host; for
+//! a session in a worktree of its own, everything it changed there since
+//! the worktree was made) or everything the agent edited in this session,
+//! merged per file.
 
 use acc_core::event::ItemKind;
 use acc_core::item::{FileChangeKind, FileDiff, ItemDetail};
@@ -48,6 +50,8 @@ pub struct DiffView {
     pub want: Option<String>,
     /// The source was picked by hand; don't switch it on a git failure.
     pub chosen: bool,
+    /// The session has a worktree of its own: git shows what it changed there.
+    pub worktree: bool,
 }
 
 impl DiffView {
@@ -131,6 +135,14 @@ pub fn git_script(cwd: &str) -> String {
     )
 }
 
+/// The script reading a session's git changes: its worktree's since it
+/// was made, else the repository's against HEAD.
+fn git_exec(session: &Session) -> acc_core::Exec {
+    session
+        .worktree_diff_exec()
+        .unwrap_or_else(|_| acc_core::Exec::new(git_script(&session.spec().cwd)))
+}
+
 impl App {
     /// Opens the diff viewer for the selected session: on the edit under
     /// the cursor when there is one, else on the repository's changes.
@@ -152,6 +164,8 @@ impl App {
                 _ => None,
             });
         let cwd = session.spec().cwd.clone();
+        let worktree = session.spec().worktree.is_some();
+        let exec = git_exec(session);
         let key = slot.key.clone();
         let mut view = DiffView {
             key: key.clone(),
@@ -166,17 +180,14 @@ impl App {
             scroll: 0,
             want,
             chosen: false,
+            worktree,
         };
         if view.source == DiffSource::Session {
             let files = view.files(Some(session));
             view.select_wanted(&files);
         }
         self.overlay = Some(Overlay::Diff(Box::new(view)));
-        vec![self.run(
-            &key.host,
-            acc_core::Exec::new(git_script(&cwd)),
-            ExecTag::GitDiff(key.id),
-        )]
+        vec![self.run(&key.host, exec, ExecTag::GitDiff(key.id))]
     }
 
     pub(crate) fn on_git_diff(&mut self, key: &SessionKey, outcome: Result<ExecOutput, String>) {
@@ -273,10 +284,19 @@ impl App {
                 view.scroll = 0;
             }
             KeyCode::Char('r') => {
+                let Some(exec) = session.map(git_exec) else {
+                    return (true, Vec::new());
+                };
                 view.git = GitState::Loading;
-                let exec = acc_core::Exec::new(git_script(&view.cwd));
                 let effect = self.run(&view.key.host, exec, ExecTag::GitDiff(view.key.id.clone()));
                 return (true, vec![effect]);
+            }
+            // The viewer is the selected session's; these ask to confirm.
+            KeyCode::Char('M') if view.worktree => {
+                return (false, self.action(crate::keymap::Action::Merge));
+            }
+            KeyCode::Char('X') if view.worktree => {
+                return (false, self.action(crate::keymap::Action::Discard));
             }
             _ => {}
         }

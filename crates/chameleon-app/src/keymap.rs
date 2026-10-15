@@ -198,11 +198,15 @@ pub enum Action {
     ToggleSidebar,
     Theme,
     Blocks,
+    Handoff,
+    Usage,
+    Merge,
+    Discard,
     Jump(u8),
 }
 
 impl Action {
-    pub const ALL: [Action; 36] = [
+    pub const ALL: [Action; 40] = [
         Action::Quit,
         Action::Help,
         Action::SelectUp,
@@ -238,6 +242,10 @@ impl Action {
         Action::ToggleSidebar,
         Action::Theme,
         Action::Blocks,
+        Action::Handoff,
+        Action::Usage,
+        Action::Merge,
+        Action::Discard,
         Action::Jump(0),
     ];
 
@@ -296,6 +304,10 @@ impl Action {
             Action::ToggleSidebar => "show / hide the session list",
             Action::Theme => "colour theme",
             Action::Blocks => "transcript block style",
+            Action::Handoff => "hand the conversation to another harness",
+            Action::Usage => "usage: spend per account and day",
+            Action::Merge => "merge the session's worktree",
+            Action::Discard => "discard the session's worktree",
             Action::Jump(_) => "jump to session 1-9, 0",
         }
     }
@@ -377,6 +389,9 @@ impl Default for Keymap {
             (Key::char('b'), Action::ToggleSidebar),
             (Key::char('T'), Action::Theme),
             (Key::char('B'), Action::Blocks),
+            (Key::char('H'), Action::Handoff),
+            (Key::char('U'), Action::Usage),
+            (Key::char('M'), Action::Merge),
             (Key::char('h'), Action::FocusSidebar),
             (Key::char('l'), Action::FocusTranscript),
         ];

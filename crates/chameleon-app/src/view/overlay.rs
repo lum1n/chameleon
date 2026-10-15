@@ -11,7 +11,7 @@ use crate::view::transcript::{option_tone, request_preview};
 use crate::view::{OverlayView, Rect};
 use crate::wrap::{fit, truncate, wrap_hang, wrap_line};
 
-fn centered(area: Rect, w: u16, h: u16) -> Rect {
+pub(crate) fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.w);
     let h = h.min(area.h);
     Rect::new(area.x + (area.w - w) / 2, area.y + (area.h - h) / 2, w, h)
@@ -78,6 +78,33 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
                     ]));
                 }
             }
+            if !app.cfg.policy.is_empty() {
+                lines.push(Line::default());
+                lines.push(Line::styled("policy: answered without asking", accent.bold()));
+                for r in &app.cfg.policy {
+                    let decision = match r.decision {
+                        acc_core::policy::Decision::Allow => "allow",
+                        acc_core::policy::Decision::Deny => "deny",
+                    };
+                    let what: Vec<String> = [
+                        r.tool.as_ref().map(|t| format!("tool {t}")),
+                        r.command.as_ref().map(|c| format!("command {c:?}")),
+                        r.path.as_ref().map(|p| format!("path {p}")),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                    let what = if what.is_empty() {
+                        "every request".to_owned()
+                    } else {
+                        what.join(" · ")
+                    };
+                    lines.push(Line::new(vec![
+                        Span::new(fit(decision, 18), accent),
+                        Span::raw(what),
+                    ]));
+                }
+            }
             if !app.problems.is_empty() {
                 lines.push(Line::default());
                 lines.push(Line::styled(
@@ -111,10 +138,12 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
             }
         }
         Overlay::Confirm { action, title, .. } => {
-            let rect = centered(area, 50, 5);
+            let rect = centered(area, 64, 5);
             let what = match action {
                 ConfirmAction::Kill => "Stop the harness of",
                 ConfirmAction::Remove => "Stop and delete",
+                ConfirmAction::Merge => "Commit and merge the worktree of",
+                ConfirmAction::Discard => "Stop and delete the worktree, with its changes, of",
             };
             OverlayView {
                 rect,
@@ -303,7 +332,92 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
             input,
         } => panel_view(app, key, id, *selected, input.as_deref(), area),
         Overlay::Diff(view) => crate::view::diff::build(app, view, area),
+        Overlay::Usage { scroll } => crate::view::usage::build(app, *scroll, area),
+        Overlay::Handoff {
+            key,
+            harnesses,
+            selected,
+        } => handoff_view(app, key, harnesses, *selected, area),
     })
+}
+
+/// The handoff picker.
+///
+/// ```text
+/// ╭ hand over ─────────────────────────────────────────────╮
+/// │                                                        │
+/// │  fix the tests goes on in another harness, in the same │
+/// │  directory, primed with the conversation so far.       │
+/// │                                                        │
+/// │  ❯ Codex          0.162.1                              │
+/// │    pi             0.70.2                               │
+/// │                                                        │
+/// ╰──────────────────────── j/k move · enter hand over · esc ╯
+/// ```
+fn handoff_view(
+    app: &App,
+    key: &crate::slot::SessionKey,
+    harnesses: &[acc_core::Harness],
+    selected: usize,
+    area: Rect,
+) -> OverlayView {
+    let theme = app.theme;
+    let muted = Style::new().fg(theme.muted);
+    let rect = centered(area, 64, area.h.saturating_sub(4).max(8));
+    let w = (rect.inner().w as usize).saturating_sub(2 * PAD.len()).max(8);
+    let title = app
+        .slots
+        .iter()
+        .find(|s| &s.key == key)
+        .map(|s| s.title())
+        .unwrap_or_default();
+    let mut lines = vec![Line::default()];
+    let mut what = format!(
+        "\"{}\" goes on in another harness, in the same directory, primed with the conversation so far",
+        truncate(&title, 30)
+    );
+    what.push_str(if app.composer.is_empty() {
+        "."
+    } else {
+        "; the prompt you typed goes as the next message."
+    });
+    for l in wrap_line(&Line::styled(what, muted), w, "") {
+        lines.push(padded(l));
+    }
+    lines.push(Line::default());
+    let available = app.host(&key.host).map(|h| h.harnesses.as_slice()).unwrap_or(&[]);
+    for (i, h) in harnesses.iter().enumerate() {
+        let chosen = i == selected;
+        let version = available
+            .iter()
+            .find(|a| a.harness == *h)
+            .and_then(|a| a.version.clone())
+            .unwrap_or_default();
+        lines.push(padded(Line::new(vec![
+            Span::new(
+                if chosen { "❯ " } else { "  " },
+                Style::new().fg(theme.accent).bold(),
+            ),
+            Span::new(
+                fit(h.display_name(), 16),
+                if chosen {
+                    Style::new().fg(theme.accent).bold()
+                } else {
+                    Style::new()
+                },
+            ),
+            Span::new(truncate(&version, w.saturating_sub(20)), muted),
+        ])));
+    }
+    let (rect, lines, cursor) = fit_content(rect, lines, None);
+    OverlayView {
+        rect,
+        title: "hand over".into(),
+        lines,
+        footer: Some(Line::styled("j/k move · enter hand over · esc", muted)),
+        cursor,
+        tone: None,
+    }
 }
 
 fn panel_view(
@@ -436,7 +550,7 @@ const PAD: &str = "  ";
 
 /// Shrinks `max` (vertically centred) to `lines` and a row of air, and
 /// makes a content-relative cursor absolute.
-fn fit_content(
+pub(crate) fn fit_content(
     max: Rect,
     mut lines: Vec<Line>,
     cursor: Option<(u16, u16)>,
@@ -543,7 +657,7 @@ fn permission_view(
     }
     lines.push(Line::default());
     for (i, o) in p.options.iter().enumerate() {
-        let ot = option_tone(&o.id, &o.label, &theme);
+        let ot = option_tone(o, &theme);
         let chosen = i == selected && text.is_empty();
         let label = if chosen {
             Style::new().fg(ot).bold()
@@ -875,6 +989,7 @@ fn themes_view(app: &App, selected: usize, area: Rect) -> OverlayView {
 /// │    harness       Claude Code   Codex   pi   opencode       │
 /// │                                                            │
 /// │  ❯ directory     ~/repos/chameleon                         │
+/// │    worktree      no   its own, on a new branch             │
 /// │    model         the harness's default                     │
 /// │    permission    default                                   │
 /// │                                                            │
@@ -936,7 +1051,7 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
     };
 
     lines.extend(choices(
-        0,
+        Wizard::HOST,
         "host",
         app.hosts
             .iter()
@@ -945,7 +1060,7 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
             .collect(),
     ));
     lines.extend(choices(
-        1,
+        Wizard::HARNESS,
         "harness",
         harnesses
             .iter()
@@ -968,6 +1083,27 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
             "no harness found on the host's PATH",
             Style::new().fg(theme.error),
         ));
+    } else if let Some(a) = app
+        .hosts
+        .get(w.host)
+        .and_then(|h| h.harnesses.iter().find(|a| a.harness == w.harness))
+    {
+        // The installed version against the range acc was tested with.
+        use acc_core::harness::Compat;
+        let (oldest, newest) = w.harness.tested_versions();
+        let version = a.version.as_deref().unwrap_or("?");
+        let (text, style) = match a.compat {
+            Compat::Tested | Compat::Unknown => (version.to_owned(), muted),
+            Compat::Newer => (
+                format!("{version}: newer than acc was tested with ({newest}); probably fine"),
+                muted,
+            ),
+            Compat::Older => (
+                format!("{version}: older than acc was tested with ({oldest}); it may not start"),
+                Style::new().fg(theme.permission),
+            ),
+        };
+        lines.push(note(&truncate(&text, value_w), style));
     }
     lines.push(Line::default());
 
@@ -977,8 +1113,9 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
         "the harness's default",
         "the harness's default",
     ];
+    let fields = [Wizard::DIR, Wizard::MODEL, Wizard::PERMISSION];
     for (i, name) in names.iter().enumerate() {
-        let field = i + 2;
+        let field = fields[i];
         let focused = w.field == field;
         let value = &w.fields[i];
         let shown = tail(value, value_w);
@@ -1024,7 +1161,17 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
             ));
             lines.extend(wrap_hang(&m, width + PAD.len(), &hang));
         }
-        if field == 3 && focused && !models.is_empty() {
+        if field == Wizard::DIR {
+            lines.extend(choices(
+                Wizard::WORKTREE,
+                "worktree",
+                vec![
+                    ("no".to_owned(), !w.worktree),
+                    ("its own, on a new branch".to_owned(), w.worktree),
+                ],
+            ));
+        }
+        if field == Wizard::MODEL && focused && !models.is_empty() {
             // Long lists show a window around the pick.
             const SHOWN: usize = 8;
             let at = models.iter().position(|m| m == value.trim());
@@ -1047,7 +1194,7 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
             lines.extend(wrap_hang(&m, width + PAD.len(), &hang));
         }
         let modes = permission_modes(w.harness);
-        if field == 4 && focused && !modes.is_empty() {
+        if field == Wizard::PERMISSION && focused && !modes.is_empty() {
             let mut m = padded(Line::raw(" ".repeat(2 + LABEL)));
             for mode in modes {
                 m.push(chip(mode, value == mode, false));
@@ -1060,8 +1207,8 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
     lines.push(Line::default());
 
     // The first prompt: a few wrapped lines behind a bar.
-    let focused = w.field == 5;
-    lines.push(padded(Line::new(label(5, "first prompt"))));
+    let focused = w.field == Wizard::PROMPT;
+    lines.push(padded(Line::new(label(Wizard::PROMPT, "first prompt"))));
     let bar = Span::new(
         "┃ ",
         Style::new().fg(if focused { theme.accent } else { theme.border }),
@@ -1105,13 +1252,23 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
     let status = if let Some(e) = &w.error {
         Line::styled(format!("✖ {e}"), Style::new().fg(theme.error))
     } else if w.busy {
-        Line::styled(format!("{} checking the directory…", spinner(app.now_ms)), muted)
+        let what = if w.worktree {
+            "making the worktree"
+        } else {
+            "checking the directory"
+        };
+        Line::styled(format!("{} {what}…", spinner(app.now_ms)), muted)
     } else {
+        let worktree = if w.worktree {
+            " in a git worktree of its own"
+        } else {
+            ""
+        };
         Line::new(vec![
             Span::new("⏵ ", accent),
             Span::new(
                 format!(
-                    "starts {} on {host}, detached; it keeps running if chameleon quits",
+                    "starts {} on {host}{worktree}, detached; it keeps running if chameleon quits",
                     w.harness.display_name()
                 ),
                 muted,

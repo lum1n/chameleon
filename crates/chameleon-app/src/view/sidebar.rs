@@ -132,9 +132,21 @@ pub fn build(app: &App, rect: Rect) -> PaneView {
                 Style::new().fg(if slot.attention { theme.accent } else { theme.muted }),
             ));
             let mut rows = vec![line];
-            // Where it runs, under the title: the last directories count most.
+            // Where it runs, under the title: the last directories count
+            // most. A worktree's path says nothing; its branch does.
             let cwd = slot.spec.cwd.trim_end_matches('/');
-            if !cwd.is_empty() {
+            if let Some(name) = &slot.spec.worktree {
+                rows.push(Line::new(vec![
+                    bar.clone(),
+                    Span::new(
+                        format!(
+                            "    ⎇ {}",
+                            truncate(&acc_core::worktree::branch(name), w.saturating_sub(10))
+                        ),
+                        muted,
+                    ),
+                ]));
+            } else if !cwd.is_empty() {
                 rows.push(Line::new(vec![
                     bar.clone(),
                     Span::new(format!("    {}", truncate_path(cwd, w.saturating_sub(8))), muted),

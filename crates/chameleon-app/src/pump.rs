@@ -6,6 +6,7 @@ use acc_core::command::Command;
 use acc_core::detached::{FeedEntry, FeedPath, Status, parse_list};
 use acc_core::driver::DriverError;
 use acc_core::event::Event;
+use acc_core::policy::Policy;
 use acc_core::session::{
     LaunchRequest, Outbound, Session, SessionError, SessionSpec, Update, new_session_id,
 };
@@ -27,15 +28,25 @@ impl App {
             self.toast("pick a harness first", true);
             return Vec::new();
         };
-        let replaces = req.replaces_parent.then(|| req.parent.clone()).flatten();
         let id = new_session_id(harness, &(self.entropy)());
-        let (session, exec) = match Session::launch(req, &id, &self.client_tag, self.now_ms) {
+        self.launch_as(host, req, id)
+    }
+
+    /// Starts a new session with id `id` (one a worktree was made for).
+    pub(crate) fn launch_as(&mut self, host: &HostId, req: LaunchRequest, id: String) -> Vec<Effect> {
+        let Some(harness) = req.harness else {
+            self.toast("pick a harness first", true);
+            return Vec::new();
+        };
+        let replaces = req.replaces_parent.then(|| req.parent.clone()).flatten();
+        let (mut session, exec) = match Session::launch(req, &id, &self.client_tag, self.now_ms) {
             Ok(x) => x,
             Err(e) => {
                 self.toast(format!("can't start {}: {e}", harness.display_name()), true);
                 return Vec::new();
             }
         };
+        session.set_policy(self.policy());
         let key = SessionKey::new(host, &id);
         let mut slot = Slot::new(key.clone(), session.spec().clone());
         slot.session = Some(session);
@@ -47,14 +58,42 @@ impl App {
         vec![self.run(host, exec, ExecTag::Launch(id))]
     }
 
+    /// Starts the host's watcher for the session in slot `i`, when the
+    /// config asks for one. Only for sessions started here: running it
+    /// again replaces the hook another client may have set.
+    fn watch(&self, i: usize) -> Vec<Effect> {
+        let Some(Ok(hook)) = self.cfg.watch.as_ref().map(crate::config::WatchConfig::hook) else {
+            return Vec::new();
+        };
+        let slot = &self.slots[i];
+        match &slot.session {
+            Some(s) => vec![self.run(
+                &slot.key.host,
+                s.watch_exec(hook.as_ref()),
+                ExecTag::Watch(slot.key.id.clone()),
+            )],
+            None => Vec::new(),
+        }
+    }
+
+    /// The config's rules, for sessions to answer approvals by. Set when a
+    /// session is made, before anything waits, so nothing is answered then.
+    fn policy(&self) -> Option<Policy> {
+        (!self.cfg.policy.is_empty()).then(|| Policy {
+            rules: self.cfg.policy.clone(),
+        })
+    }
+
     /// Joins the session in slot `i` from its spec.
     pub(crate) fn attach(&mut self, i: usize) -> Vec<Effect> {
+        let policy = self.policy();
         let slot = &mut self.slots[i];
         if slot.session.is_some() {
             return Vec::new();
         }
         match Session::attach(slot.spec.clone(), &self.client_tag) {
-            Ok(s) => {
+            Ok(mut s) => {
+                s.set_policy(policy);
                 let exec = s.status_exec();
                 slot.session = Some(s);
                 slot.phase = Phase::Attaching;
@@ -84,6 +123,7 @@ impl App {
             Command::Invoke { name, .. } => Some(name.clone()),
             _ => None,
         };
+        let handoff = matches!(cmd, Command::Handoff { .. });
         match session.command(cmd) {
             Ok(Outbound::Send(bytes)) => {
                 let mut out = Vec::new();
@@ -102,7 +142,13 @@ impl App {
             }
             Ok(Outbound::Relaunch(req)) => {
                 let host = key.host.clone();
-                let what = if req.fork { "Forking" } else { "Restarting" };
+                let what = if handoff {
+                    "Handing over to"
+                } else if req.fork {
+                    "Forking"
+                } else {
+                    "Restarting"
+                };
                 self.toast(
                     format!("{what} {}…", req.harness.map(Harness::display_name).unwrap_or("")),
                     false,
@@ -173,6 +219,9 @@ impl App {
         tag: ExecTag,
         result: Result<ExecOutput, String>,
     ) -> Vec<Effect> {
+        if let ExecTag::Merge(id) = &tag {
+            return self.on_merge_done(&SessionKey::new(host, id), result);
+        }
         let outcome = match result {
             Ok(o) if o.ok() => Ok(o),
             Ok(o) => {
@@ -206,6 +255,7 @@ impl App {
                 Vec::new()
             }
             ExecTag::ResolveDir => self.on_resolve_dir(host, outcome),
+            ExecTag::AddWorktree(id) => self.on_add_worktree(host, &id, outcome),
             ExecTag::ListDirs(parent) => {
                 self.on_list_dirs(host, &parent, outcome);
                 Vec::new()
@@ -269,7 +319,35 @@ impl App {
                     }
                 }
             }
-            ExecTag::SpecWrite(_) => Vec::new(),
+            ExecTag::SpecWrite(_) | ExecTag::Merge(_) => Vec::new(),
+            ExecTag::Watch(_) => {
+                if let Err(e) = outcome {
+                    self.toast(format!("can't watch the session on {host}: {e}"), true);
+                }
+                Vec::new()
+            }
+            ExecTag::Discard(id) => {
+                let key = SessionKey::new(host, &id);
+                match outcome {
+                    Ok(_) => {
+                        self.toast("worktree deleted", false);
+                        if matches!(&self.overlay, Some(crate::overlay::Overlay::Diff(v)) if v.key == key) {
+                            self.overlay = None;
+                        }
+                        match self
+                            .slot_mut(&key)
+                            .and_then(|s| s.session.as_ref().map(|x| x.status_exec()))
+                        {
+                            Some(exec) => vec![self.run(host, exec, ExecTag::Recheck(id))],
+                            None => Vec::new(),
+                        }
+                    }
+                    Err(e) => {
+                        self.toast(format!("can't delete the worktree: {e}"), true);
+                        Vec::new()
+                    }
+                }
+            }
             ExecTag::GitDiff(id) => {
                 self.on_git_diff(&SessionKey::new(host, &id), outcome);
                 Vec::new()
@@ -297,6 +375,7 @@ impl App {
                 });
                 let mut out = Self::follow_effects(&key, 0);
                 out.extend(self.flush(i));
+                out.extend(self.watch(i));
                 if let Some(parent) = self.slots[i].kill_after_launch.take() {
                     let pk = SessionKey::new(host, &parent);
                     if let Some(exec) = self
@@ -344,7 +423,7 @@ impl App {
         let status = acc_core::detached::parse_status(&text);
         let was_attaching = self.slots[i].phase == Phase::Attaching;
         let slot = &mut self.slots[i];
-        slot.status = status.clone();
+        slot.status = status;
         slot.log_size = status.as_ref().map(Status::size);
         let now = self.now_ms;
         let updates = match slot.session.as_mut() {
@@ -403,7 +482,7 @@ impl App {
             slot.modified = l.modified;
             if slot.session.is_none() {
                 slot.spec = spec;
-                slot.status = Some(l.status.clone());
+                slot.status = Some(l.status);
             } else if slot.spec.title.is_none() {
                 slot.spec.title = spec.title;
             }
@@ -495,6 +574,7 @@ impl App {
         let mut events = Vec::new();
         let mut notices = Vec::new();
         let mut panels = Vec::new();
+        let mut spent = false;
         {
             let slot = &mut self.slots[i];
             for u in &updates {
@@ -504,6 +584,8 @@ impl App {
                 if u.replay {
                     continue;
                 }
+                // Replayed usage arrives with the first live report, whole.
+                spent |= matches!(u.event, Event::Usage(_) | Event::Quota(_));
                 slot.last_live_ms = now;
                 if !selected {
                     slot.attention = true;
@@ -535,6 +617,10 @@ impl App {
                     _ => {}
                 }
             }
+        }
+        if spent && let Some(session) = self.slots[i].session.take() {
+            self.record_usage(&session);
+            self.slots[i].session = Some(session);
         }
         for n in notices {
             self.toast(n, false);
@@ -590,6 +676,87 @@ impl App {
             env: hooks::env(&slot.key.host, session, None),
             suspend_tui: h.suspend_tui,
         }]
+    }
+
+    /// Commits what the session changed in its worktree and squashes it
+    /// into the branch checked out in the repository.
+    pub(crate) fn merge_worktree(&mut self, key: &SessionKey) -> Vec<Effect> {
+        let Some(slot) = self.slot_mut(key) else {
+            return Vec::new();
+        };
+        // From the spec, so a session that isn't attached merges too.
+        let Some(name) = slot.spec.worktree.clone() else {
+            return Vec::new();
+        };
+        let message = slot
+            .spec
+            .title
+            .clone()
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| {
+                format!(
+                    "Changes from {} session {}",
+                    slot.harness().display_name(),
+                    key.id
+                )
+            });
+        let exec = Exec::new(acc_core::worktree::merge_script(&name, &message, true));
+        vec![self.run(&key.host, exec, ExecTag::Merge(key.id.clone()))]
+    }
+
+    fn on_merge_done(&mut self, key: &SessionKey, result: Result<ExecOutput, String>) -> Vec<Effect> {
+        match result {
+            Ok(o) if o.ok() => {
+                let commit = o.stdout_text();
+                let commit = commit.trim();
+                self.toast(format!("merged as {}", commit.get(..10).unwrap_or(commit)), false);
+                // Later diffs count from the merge; show that.
+                if let Some(crate::overlay::Overlay::Diff(v)) = &mut self.overlay
+                    && v.key == *key
+                {
+                    v.git = crate::diff::GitState::Loading;
+                    if let Some(exec) = self
+                        .slots
+                        .iter()
+                        .find(|s| s.key == *key)
+                        .and_then(|s| s.spec.worktree.as_deref())
+                        .map(|name| Exec::new(acc_core::worktree::diff_script(name)))
+                    {
+                        return vec![self.run(&key.host, exec, ExecTag::GitDiff(key.id.clone()))];
+                    }
+                }
+            }
+            Ok(o) if o.status == Some(acc_core::worktree::EXIT_CONFLICT as i32) => self.toast(
+                "the changes conflict with the repository's branch; nothing was merged",
+                true,
+            ),
+            Ok(o) => {
+                let err = o.stderr_text();
+                self.toast(
+                    format!("merge failed: {}", err.lines().last().unwrap_or("exit status")),
+                    true,
+                );
+            }
+            Err(e) => self.toast(format!("merge failed: {e}"), true),
+        }
+        Vec::new()
+    }
+
+    /// Stops the harness and deletes the session's worktree and branch.
+    pub(crate) fn discard_worktree(&mut self, key: &SessionKey) -> Vec<Effect> {
+        let Some(name) = self.slot_mut(key).and_then(|s| s.spec.worktree.clone()) else {
+            return Vec::new();
+        };
+        let Some(dir) = acc_core::detached::SessionDir::new(&key.id) else {
+            return Vec::new();
+        };
+        // What `Session::worktree_discard_exec` runs, for attached or not.
+        let exec = Exec::new(format!(
+            "{}{}",
+            dir.kill_script(2_000),
+            acc_core::worktree::discard_script(&name)
+        ));
+        vec![self.run(&key.host, exec, ExecTag::Discard(key.id.clone()))]
     }
 
     /// Stops a session's harness.

@@ -3,9 +3,10 @@
 
 use acc_core::Harness;
 use acc_core::command::{Choice, Command, CommandEntry, CommandInput, Exec, OptionId};
-use acc_core::event::{Panel, PanelAction};
+use acc_core::event::{Panel, PanelAction, PermissionOption};
 use acc_core::item::ItemDetail;
-use acc_core::session::{LaunchRequest, Origin, Permission};
+use acc_core::policy::Decision;
+use acc_core::session::{LaunchRequest, Permission, new_session_id};
 use acc_core::state::BlockKind;
 
 use crate::event::{Effect, ExecOutput, ExecTag, HostId};
@@ -17,6 +18,10 @@ use crate::slot::SessionKey;
 pub enum ConfirmAction {
     Kill,
     Remove,
+    /// Commit the worktree's changes and squash them into the repository.
+    Merge,
+    /// Stop the harness and delete the worktree with its changes.
+    Discard,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,8 +30,10 @@ pub struct Wizard {
     pub harness: Harness,
     /// cwd, model, permission, prompt
     pub fields: [String; 4],
-    /// 0 host, 1 harness, 2.. text fields
+    /// The row with focus: [`Wizard::HOST`] to [`Wizard::PROMPT`].
     pub field: usize,
+    /// Start the session in a git worktree of its own.
+    pub worktree: bool,
     pub busy: bool,
     pub error: Option<String>,
     pub resume: Option<String>,
@@ -40,12 +47,24 @@ pub struct Wizard {
 }
 
 impl Wizard {
-    pub const FIELDS: usize = 6;
-    /// The directory field.
+    pub const HOST: usize = 0;
+    pub const HARNESS: usize = 1;
     pub const DIR: usize = 2;
+    pub const WORKTREE: usize = 3;
+    pub const MODEL: usize = 4;
+    pub const PERMISSION: usize = 5;
+    pub const PROMPT: usize = 6;
+    pub const FIELDS: usize = 7;
 
+    /// The index into `fields` of the row with focus, when it takes text.
     pub fn text_field(&self) -> Option<usize> {
-        self.field.checked_sub(2).filter(|i| *i < 4)
+        match self.field {
+            Self::DIR => Some(0),
+            Self::MODEL => Some(1),
+            Self::PERMISSION => Some(2),
+            Self::PROMPT => Some(3),
+            _ => None,
+        }
     }
 
     /// The directory typed so far, split after its last `/`: the parent
@@ -215,6 +234,16 @@ pub enum Overlay {
         /// Index into [`agent_rows`].
         selected: usize,
     },
+    /// Picks the harness to hand the conversation over to.
+    Handoff {
+        key: SessionKey,
+        harnesses: Vec<Harness>,
+        selected: usize,
+    },
+    /// What sessions spent, per account and per day.
+    Usage {
+        scroll: usize,
+    },
     /// The theme picker; moving previews, esc puts `original` back.
     Themes {
         /// Index into [`App::theme_choices`], after the terminal entry (0).
@@ -239,6 +268,10 @@ impl Overlay {
         }
     }
 
+    pub fn confirm(key: SessionKey, action: ConfirmAction, title: String) -> Self {
+        Overlay::Confirm { key, action, title }
+    }
+
     pub fn confirm_remove(key: SessionKey, title: String) -> Self {
         Overlay::Confirm {
             key,
@@ -249,14 +282,10 @@ impl Overlay {
 
     /// `deny` preselects the denying option (or the last one).
     pub fn permission(key: SessionKey, p: &Permission, deny: bool) -> Self {
-        let selected = if deny {
-            p.options
-                .iter()
-                .position(|o| is_denial(&o.id, &o.label))
-                .unwrap_or(p.options.len().saturating_sub(1))
-        } else {
-            0
-        };
+        let pick = if deny { deny_option } else { allow_option };
+        let selected = pick(&p.options)
+            .and_then(|o| p.options.iter().position(|x| x.id == o.id))
+            .unwrap_or(0);
         Overlay::Permission {
             key,
             request_id: p.request_id.clone(),
@@ -348,7 +377,8 @@ impl Overlay {
             host,
             harness,
             fields: [cwd, String::new(), String::new(), String::new()],
-            field: 2,
+            field: Wizard::DIR,
+            worktree: false,
             busy: false,
             error: None,
             resume: None,
@@ -428,6 +458,24 @@ pub fn panel_actions(panel: &Panel) -> Vec<&PanelAction> {
         .iter()
         .flat_map(|s| s.rows.iter().flat_map(|r| &r.actions).chain(&s.actions))
         .collect()
+}
+
+/// The option that allows a request once: the one the harness marks so,
+/// else the first.
+pub(crate) fn allow_option(options: &[PermissionOption]) -> Option<&PermissionOption> {
+    acc_core::policy::option_for(Decision::Allow, options).or(options.first())
+}
+
+/// The option that rejects a request: the one the harness marks so, else
+/// one worded like it, else the last.
+pub(crate) fn deny_option(options: &[PermissionOption]) -> Option<&PermissionOption> {
+    acc_core::policy::option_for(Decision::Deny, options)
+        .or_else(|| {
+            options
+                .iter()
+                .find(|o| o.kind.is_none() && is_denial(&o.id, &o.label))
+        })
+        .or(options.last())
 }
 
 pub(crate) fn is_denial(id: &str, label: &str) -> bool {
@@ -545,6 +593,8 @@ impl App {
                     out = match action {
                         ConfirmAction::Kill => self.kill(&skey),
                         ConfirmAction::Remove => self.remove(&skey),
+                        ConfirmAction::Merge => self.merge_worktree(&skey),
+                        ConfirmAction::Discard => self.discard_worktree(&skey),
                     };
                 }
                 _ => keep = false,
@@ -643,18 +693,13 @@ impl App {
                     }
                     KeyCode::Char('y') if text.is_empty() && perm.kind != BlockKind::Question => {
                         keep = false;
-                        if let Some(o) = perm.options.first() {
+                        if let Some(o) = allow_option(&perm.options) {
                             out = self.answer(skey, request_id, &o.id);
                         }
                     }
                     KeyCode::Char('n') if text.is_empty() && perm.kind != BlockKind::Question => {
                         keep = false;
-                        if let Some(o) = perm
-                            .options
-                            .iter()
-                            .find(|o| is_denial(&o.id, &o.label))
-                            .or(perm.options.last())
-                        {
+                        if let Some(o) = deny_option(&perm.options) {
                             out = self.answer(skey, request_id, &o.id);
                         }
                     }
@@ -692,8 +737,8 @@ impl App {
                 }
             }
             Overlay::Launch(w) => {
-                // The host and harness rows take no text: hjkl move there.
-                let key = if w.field < 2 && !key.ctrl && !key.alt {
+                // The rows of choices take no text: hjkl move there.
+                let key = if w.text_field().is_none() && !key.ctrl && !key.alt {
                     match key.code {
                         KeyCode::Char('j') => Key::new(KeyCode::Down),
                         KeyCode::Char('k') => Key::new(KeyCode::Up),
@@ -728,7 +773,7 @@ impl App {
                         KeyCode::BackTab | KeyCode::Up => {
                             w.field = (w.field + Wizard::FIELDS - 1) % Wizard::FIELDS
                         }
-                        KeyCode::Enter if key.ctrl || w.field == Wizard::FIELDS - 1 => {
+                        KeyCode::Enter if key.ctrl || w.field == Wizard::PROMPT => {
                             if key.alt || key.shift {
                                 w.fields[3].push('\n');
                             } else {
@@ -736,7 +781,7 @@ impl App {
                             }
                         }
                         KeyCode::Enter => w.field = (w.field + 1) % Wizard::FIELDS,
-                        KeyCode::Left | KeyCode::Right if w.field == 0 => {
+                        KeyCode::Left | KeyCode::Right if w.field == Wizard::HOST => {
                             let n = self.hosts.len().max(1);
                             w.host = if key.code == KeyCode::Right {
                                 (w.host + 1) % n
@@ -744,7 +789,7 @@ impl App {
                                 (w.host + n - 1) % n
                             };
                         }
-                        KeyCode::Left | KeyCode::Right if w.field == 1 => {
+                        KeyCode::Left | KeyCode::Right if w.field == Wizard::HARNESS => {
                             let list = self.wizard_harnesses(w.host);
                             let i = list.iter().position(|h| *h == w.harness).unwrap_or(0);
                             let n = list.len().max(1);
@@ -757,21 +802,26 @@ impl App {
                                 self.wizard_set_harness(w, *h);
                             }
                         }
-                        KeyCode::Left | KeyCode::Right if w.field == 3 => {
+                        KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+                            if w.field == Wizard::WORKTREE =>
+                        {
+                            w.worktree = !w.worktree
+                        }
+                        KeyCode::Left | KeyCode::Right if w.field == Wizard::MODEL => {
                             let models = self.wizard_models(w.host, w.harness);
                             if let Some(m) = cycle(&models, &w.fields[1], key.code == KeyCode::Right) {
                                 w.fields[1] = m.to_owned();
                             }
                         }
                         KeyCode::Left | KeyCode::Right
-                            if w.field == 4 && !permission_modes(w.harness).is_empty() =>
+                            if w.field == Wizard::PERMISSION && !permission_modes(w.harness).is_empty() =>
                         {
                             let modes = permission_modes(w.harness);
                             if let Some(m) = cycle(modes, &w.fields[2], key.code == KeyCode::Right) {
                                 w.fields[2] = (*m).to_owned();
                             }
                         }
-                        KeyCode::Char(' ') if w.field == 1 => {
+                        KeyCode::Char(' ') if w.field == Wizard::HARNESS => {
                             let list = self.wizard_harnesses(w.host);
                             let i = list.iter().position(|h| *h == w.harness).unwrap_or(0);
                             if let Some(h) = list.get((i + 1) % list.len().max(1)) {
@@ -800,7 +850,7 @@ impl App {
                             w.pick = None;
                             if let Some(i) = w.text_field() {
                                 w.fields[i].push(c);
-                            } else if w.field == 1
+                            } else if w.field == Wizard::HARNESS
                                 && let Some(h) = self.wizard_harnesses(w.host).into_iter().find(|h| {
                                     h.display_name()
                                         .to_ascii_lowercase()
@@ -1051,6 +1101,41 @@ impl App {
                     _ => {}
                 }
             }
+            Overlay::Handoff {
+                key: skey,
+                harnesses,
+                selected,
+            } => {
+                let n = harnesses.len().max(1);
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => keep = false,
+                    KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => *selected = (*selected + 1) % n,
+                    KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => {
+                        *selected = (*selected + n - 1) % n
+                    }
+                    KeyCode::Home | KeyCode::Char('g') => *selected = 0,
+                    KeyCode::End | KeyCode::Char('G') => *selected = n - 1,
+                    KeyCode::Enter => {
+                        keep = false;
+                        if let Some(&harness) = harnesses.get(*selected) {
+                            let skey = skey.clone();
+                            // A prompt typed so far goes over as the next message.
+                            let prompt = (!self.composer.is_empty()).then(|| self.composer.take());
+                            out = self.send(&skey, Command::Handoff { harness, prompt });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Overlay::Usage { scroll } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('U') | KeyCode::Enter => keep = false,
+                KeyCode::Char('j') | KeyCode::Down => *scroll += 1,
+                KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
+                KeyCode::Char(' ') | KeyCode::PageDown => *scroll += 10,
+                KeyCode::Char('b') | KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                KeyCode::Char('g') | KeyCode::Home => *scroll = 0,
+                _ => {}
+            },
             Overlay::Diff(view) => {
                 let (k, fx) = self.diff_key(view, key);
                 keep = k;
@@ -1071,6 +1156,39 @@ impl App {
                 option_id: option_id.to_owned(),
             },
         )
+    }
+
+    /// Opens the handoff picker for the selected session: every harness
+    /// on its host but its own.
+    pub(crate) fn open_handoff(&mut self) {
+        let Some(s) = self.selected() else {
+            self.toast("select a session first", false);
+            return;
+        };
+        if s.session.is_none() {
+            self.toast("the session isn't attached", false);
+            return;
+        }
+        let host = self
+            .hosts
+            .iter()
+            .position(|h| h.cfg.name == s.key.host)
+            .unwrap_or(0);
+        let own = s.harness();
+        let harnesses: Vec<Harness> = self
+            .wizard_harnesses(host)
+            .into_iter()
+            .filter(|h| *h != own)
+            .collect();
+        if harnesses.is_empty() {
+            self.toast("no other harness on the host", false);
+            return;
+        }
+        self.overlay = Some(Overlay::Handoff {
+            key: s.key.clone(),
+            harnesses,
+            selected: 0,
+        });
     }
 
     pub(crate) fn wizard_harnesses(&self, host: usize) -> Vec<Harness> {
@@ -1190,27 +1308,50 @@ impl App {
                     self.overlay = Some(Overlay::Launch(w));
                     return Vec::new();
                 }
-                let opt = |s: &String| Some(s.trim().to_owned()).filter(|s| !s.is_empty());
-                let req = LaunchRequest {
-                    harness: Some(w.harness),
-                    cwd,
-                    model: opt(&w.fields[1]),
-                    permission: opt(&w.fields[2]),
-                    resume: w.resume.clone(),
-                    fork: false,
-                    title: None,
-                    prompt: opt(&w.fields[3]),
-                    attachments: Vec::new(),
-                    parent: None,
-                    replaces_parent: false,
-                    origin: Origin::Started,
-                    launcher: None,
-                };
+                if w.worktree {
+                    // The worktree is named after the session it is made for.
+                    let id = new_session_id(w.harness, &(self.entropy)());
+                    let exec = acc_core::Exec::new(acc_core::worktree::add_script(&cwd, &id, None));
+                    w.busy = true;
+                    self.overlay = Some(Overlay::Launch(w));
+                    return vec![self.run(host, exec, ExecTag::AddWorktree(id))];
+                }
+                let req = wizard_request(&w, cwd, None);
                 self.focus = crate::model::Pane::Composer;
                 self.launch(host, req)
             }
             Err(e) => {
                 w.error = Some(format!("no such directory: {e}"));
+                self.overlay = Some(Overlay::Launch(w));
+                Vec::new()
+            }
+        }
+    }
+
+    /// The worktree for a wizard launch is made: start the session in it.
+    pub(crate) fn on_add_worktree(
+        &mut self,
+        host: &HostId,
+        id: &str,
+        outcome: Result<ExecOutput, String>,
+    ) -> Vec<Effect> {
+        let Some(Overlay::Launch(mut w)) = self.overlay.take() else {
+            return Vec::new();
+        };
+        w.busy = false;
+        match outcome.map(|o| o.stdout_text().trim().to_owned()) {
+            Ok(cwd) if !cwd.is_empty() => {
+                let req = wizard_request(&w, cwd, Some(id.to_owned()));
+                self.focus = crate::model::Pane::Composer;
+                self.launch_as(host, req, id.to_owned())
+            }
+            Ok(_) => {
+                w.error = Some("the worktree has no directory".into());
+                self.overlay = Some(Overlay::Launch(w));
+                Vec::new()
+            }
+            Err(e) => {
+                w.error = Some(format!("no worktree: {}", e.trim_start_matches("acc: ")));
                 self.overlay = Some(Overlay::Launch(w));
                 Vec::new()
             }
@@ -1226,6 +1367,21 @@ impl App {
             PaletteKind::Action(a) => self.action(a),
             PaletteKind::Hook(name) => self.run_hook(&name, None),
         }
+    }
+}
+
+/// What the wizard starts, in `cwd` (resolved on the host).
+fn wizard_request(w: &Wizard, cwd: String, worktree: Option<String>) -> LaunchRequest {
+    let opt = |s: &String| Some(s.trim().to_owned()).filter(|s| !s.is_empty());
+    LaunchRequest {
+        harness: Some(w.harness),
+        cwd,
+        model: opt(&w.fields[1]),
+        permission: opt(&w.fields[2]),
+        resume: w.resume.clone(),
+        prompt: opt(&w.fields[3]),
+        worktree,
+        ..LaunchRequest::default()
     }
 }
 

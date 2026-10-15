@@ -24,6 +24,9 @@ pub enum ExecTag {
     Probe,
     /// Resolving the working directory typed into the launch wizard.
     ResolveDir,
+    /// Making the git worktree a wizard launch starts in, named after the
+    /// session's id; stdout is the directory.
+    AddWorktree(String),
     /// Listing a directory's subdirectories for the wizard's completions.
     ListDirs(String),
     Input(String),
@@ -32,6 +35,12 @@ pub enum ExecTag {
     SpecWrite(String),
     /// The repository's changes for the diff viewer, by session.
     GitDiff(String),
+    /// Starting a session's watcher on its host.
+    Watch(String),
+    /// Merging a session's worktree into its repository.
+    Merge(String),
+    /// Deleting a session's worktree.
+    Discard(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -151,6 +160,12 @@ pub enum Effect {
     /// terminal's colours).
     SaveTheme {
         name: Option<String>,
+    },
+    /// Keep what sessions spent for the usage overview of the next start:
+    /// `acc_core::usage::UsageRecord`s as a JSON array, for
+    /// [`crate::App::load_usage`].
+    SaveUsage {
+        json: String,
     },
     Quit,
 }

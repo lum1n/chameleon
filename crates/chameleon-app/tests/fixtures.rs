@@ -69,6 +69,7 @@ fn launch(a: &mut App, harness: Harness, prompt: &str) -> (SessionKey, Vec<Effec
     for c in "/work".chars() {
         a.handle(ch(c), 1);
     }
+    a.handle(press(KeyCode::Down), 1); // worktree
     a.handle(press(KeyCode::Down), 1); // model
     a.handle(press(KeyCode::Down), 1); // permission
     a.handle(press(KeyCode::Down), 1); // prompt
@@ -1085,6 +1086,7 @@ fn the_wizard_offers_the_models_a_session_reported() {
         .unwrap();
     assert!(models.len() > 1, "{models:?}");
     a.handle(ctrl('n'), 5);
+    a.handle(press(KeyCode::Down), 5); // worktree
     a.handle(press(KeyCode::Down), 5); // model
     a.handle(press(KeyCode::Right), 5);
     a.handle(press(KeyCode::Right), 5);
@@ -1101,6 +1103,7 @@ fn the_wizard_offers_the_models_a_session_reported() {
     assert!(text.contains("ctrl-h/l") && text.contains(&models[0]), "{text}");
 
     // Another harness has no models here, so the pick is dropped.
+    a.handle(press(KeyCode::Up), 5); // worktree
     a.handle(press(KeyCode::Up), 5); // directory
     a.handle(press(KeyCode::Up), 5); // harness
     a.handle(press(KeyCode::Right), 5);
@@ -1113,7 +1116,7 @@ fn the_wizard_offers_the_models_a_session_reported() {
 
 #[test]
 fn the_wizard_completes_directories_from_the_host() {
-    use chameleon_app::overlay::Overlay;
+    use chameleon_app::overlay::{Overlay, Wizard};
     let mut a = app();
     let dir = |a: &App| match a.overlay() {
         Some(Overlay::Launch(w)) => w.fields[0].clone(),
@@ -1167,13 +1170,13 @@ fn the_wizard_completes_directories_from_the_host() {
     a.handle(press(KeyCode::Tab), 1);
     assert_eq!(dir(&a), "~/repos/chameleon/");
 
-    // Nothing to complete: tab moves on to the model.
+    // Nothing to complete: tab moves on to the worktree choice.
     answer(&mut a, "~/repos/chameleon/", "");
     a.handle(press(KeyCode::Tab), 1);
     let Some(Overlay::Launch(w)) = a.overlay() else {
         panic!("expected the wizard");
     };
-    assert_eq!(w.field, 3);
+    assert_eq!(w.field, Wizard::WORKTREE);
 }
 
 #[test]
@@ -1295,4 +1298,218 @@ fn lines_handed_out_again_are_not_fed_twice() {
     }
     assert_eq!(session(&a).offset(), offset);
     assert_eq!(format!("{:?}", session(&a).transcript().items()), once);
+}
+
+fn app_with(toml: &str) -> App {
+    let mut a = App::new(Config::parse(toml).expect("config parses"), "test");
+    a.set_entropy(|| [7; 15]);
+    a.handle(
+        AppEvent::Resize {
+            width: 120,
+            height: 40,
+        },
+        0,
+    );
+    a
+}
+
+/// The first script run with `tag`, and its host.
+fn ran(fx: &[Effect], tag: impl Fn(&ExecTag) -> bool) -> Option<(String, String)> {
+    fx.iter().find_map(|e| match e {
+        Effect::Run {
+            host, exec, tag: t, ..
+        } if tag(t) => Some((host.clone(), exec.script.clone())),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_worktree_session_launches_in_it_diffs_it_and_merges_it() {
+    use chameleon_app::overlay::{Overlay, Wizard};
+    let mut a = app();
+    a.handle(ctrl('n'), 1);
+    a.handle(ctrl('u'), 1);
+    for c in "/work".chars() {
+        a.handle(ch(c), 1);
+    }
+    a.handle(press(KeyCode::Down), 1);
+    a.handle(ch('l'), 1);
+    let Some(Overlay::Launch(w)) = a.overlay() else {
+        panic!("expected the wizard");
+    };
+    assert_eq!((w.field, w.worktree), (Wizard::WORKTREE, true));
+    let fx = a.handle(AppEvent::Key(Key::ctrl(KeyCode::Enter)), 2);
+    let (host, _) = ran(&fx, |t| *t == ExecTag::ResolveDir).expect("resolves the directory");
+
+    // The worktree is made where the directory resolved, named for the session.
+    let fx = a.handle(
+        AppEvent::ExecDone {
+            host: host.clone(),
+            tag: ExecTag::ResolveDir,
+            result: ok("/work\n"),
+        },
+        3,
+    );
+    let id = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::Run {
+                tag: ExecTag::AddWorktree(id),
+                exec,
+                ..
+            } => {
+                assert!(exec.script.contains("worktree add"), "{}", exec.script);
+                assert!(exec.script.contains("cd /work "), "{}", exec.script);
+                Some(id.clone())
+            }
+            _ => None,
+        })
+        .expect("makes the worktree first");
+    assert!(id.starts_with("claude-"), "{id}");
+    let fx = a.handle(
+        AppEvent::ExecDone {
+            host: host.clone(),
+            tag: ExecTag::AddWorktree(id.clone()),
+            result: ok(&format!("/home/u/.acc/w/{id}\n")),
+        },
+        4,
+    );
+    let (_, script) = ran(&fx, |t| *t == ExecTag::Launch(id.clone())).expect("then launches");
+    assert!(script.contains(&format!(".acc/w/{id}")), "{script}");
+    let key = SessionKey::new(&host, &id);
+    let slot = a.slots().iter().find(|s| s.key == key).unwrap();
+    assert_eq!(slot.spec.worktree.as_deref(), Some(id.as_str()));
+    let header = a.screen().header.text();
+    assert!(header.contains(&format!("⎇ acc/{id}")), "{header}");
+
+    // The diff is the worktree's, since it was made.
+    a.handle(press(KeyCode::Esc), 5);
+    a.handle(press(KeyCode::Esc), 5);
+    let fx = a.handle(ch('d'), 5);
+    let (_, script) = ran(&fx, |t| matches!(t, ExecTag::GitDiff(_))).expect("reads the diff");
+    assert!(script.contains(&format!(".acc/w/{id}")), "{script}");
+    assert!(diff_view(&a).worktree);
+
+    // M asks, y merges; a conflict is said as such.
+    a.handle(ch('M'), 6);
+    assert!(matches!(a.overlay(), Some(Overlay::Confirm { .. })));
+    let fx = a.handle(ch('y'), 6);
+    let (_, script) = ran(&fx, |t| matches!(t, ExecTag::Merge(_))).expect("merges");
+    assert!(script.contains("--squash"), "{script}");
+    a.handle(
+        AppEvent::ExecDone {
+            host: host.clone(),
+            tag: ExecTag::Merge(id.clone()),
+            result: Ok(ExecOutput {
+                status: Some(acc_core::worktree::EXIT_CONFLICT as i32),
+                ..ExecOutput::default()
+            }),
+        },
+        7,
+    );
+    let toasts: Vec<String> = a.screen().toasts.iter().map(|l| l.text()).collect();
+    assert!(toasts.iter().any(|t| t.contains("conflict")), "{toasts:?}");
+
+    // Sessions without a worktree have nothing to merge.
+    a.set_entropy(|| [9; 15]);
+    let plain = claude_ready(&mut a);
+    a.handle(press(KeyCode::Esc), 8);
+    assert_eq!(a.selected().unwrap().key, plain);
+    a.handle(ch('M'), 8);
+    assert!(a.overlay().is_none(), "{:?}", a.overlay());
+}
+
+#[test]
+fn handoff_starts_another_harness_primed_with_the_conversation() {
+    use chameleon_app::overlay::Overlay;
+    let mut a = app();
+    let key = claude_ready(&mut a);
+    a.handle(press(KeyCode::Esc), 3);
+    a.handle(ch('H'), 3);
+    let Some(Overlay::Handoff { harnesses, .. }) = a.overlay() else {
+        panic!("expected the handoff picker, not {:?}", a.overlay());
+    };
+    assert!(!harnesses.contains(&Harness::Claude));
+    let to = harnesses[0];
+    let fx = a.handle(press(KeyCode::Enter), 4);
+    assert!(
+        ran(&fx, |t| matches!(t, ExecTag::Launch(_))).is_some(),
+        "launches the other"
+    );
+    let new = a.selected().unwrap();
+    // The primer is the first prompt, sent once the harness can take it.
+    let snap = new.session.as_ref().and_then(|s| s.snapshot()).unwrap();
+    assert!(
+        snap.contains("This conversation started in Claude Code"),
+        "{snap}"
+    );
+    assert_eq!(new.harness(), to);
+    assert_eq!(new.spec.parent.as_deref(), Some(key.id.as_str()));
+    assert!(
+        a.slots().iter().any(|s| s.key == key),
+        "the first one keeps running"
+    );
+}
+
+#[test]
+fn the_policy_answers_matching_approvals_and_says_so() {
+    let mut a = app_with("[[policy]]\ndecision = 'deny'\n");
+    let (key, _) = launch(&mut a, Harness::Claude, "");
+    a.handle(
+        AppEvent::ExecDone {
+            host: key.host.clone(),
+            tag: ExecTag::Launch(key.id.clone()),
+            result: ok("1\n"),
+        },
+        4,
+    );
+    let partial: String = CLAUDE_PERMISSION
+        .lines()
+        .take_while(|l| !l.contains("\"tool_result\""))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let fx = feed(&mut a, &key, &partial, 5);
+    let sent = written(&fx);
+    assert!(
+        sent.iter()
+            .any(|v| v.to_string().contains("\"behavior\":\"deny\"")),
+        "{sent:?}"
+    );
+    let session = a.selected().unwrap().session.as_ref().unwrap();
+    assert!(session.permissions().is_empty());
+    let toasts: Vec<String> = a.screen().toasts.iter().map(|l| l.text()).collect();
+    assert!(
+        toasts.iter().any(|t| t.starts_with("Denied by policy")),
+        "{toasts:?}"
+    );
+}
+
+#[test]
+fn usage_adds_up_and_is_saved_on_quit() {
+    use chameleon_app::overlay::Overlay;
+    let mut a = app();
+    claude_ready(&mut a);
+    a.handle(press(KeyCode::Esc), 3);
+    a.handle(ch('U'), 3);
+    assert!(matches!(a.overlay(), Some(Overlay::Usage { .. })));
+    let text = overlay_text(&mut a).join("\n");
+    assert!(
+        text.contains("all sessions") && text.contains("Claude Code"),
+        "{text}"
+    );
+    a.handle(press(KeyCode::Esc), 3);
+    let fx = a.handle(ch('q'), 4);
+    let json = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::SaveUsage { json } => Some(json.clone()),
+            _ => None,
+        })
+        .expect("saves before quitting");
+    assert!(matches!(fx.last(), Some(Effect::Quit)));
+
+    // The next start shows it before any session reports again.
+    let mut b = app();
+    b.load_usage(&json);
+    assert_eq!(b.usage_records(), a.usage_records());
 }

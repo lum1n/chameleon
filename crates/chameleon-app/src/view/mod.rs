@@ -22,6 +22,7 @@ pub mod overlay;
 pub mod sidebar;
 pub mod status;
 pub mod transcript;
+pub mod usage;
 
 use crate::model::{App, Pane};
 use crate::slot::SessionKey;

@@ -126,6 +126,46 @@ pub fn save_theme(name: Option<&str>) -> std::io::Result<()> {
     std::fs::write(path, name.unwrap_or_default())
 }
 
+/// Keeps what sessions spent for the next start, written whole and
+/// renamed into place so a crash can't leave half a file.
+pub fn save_usage(json: &str) -> std::io::Result<()> {
+    let Some(path) = state_path("usage.json") else {
+        return Ok(());
+    };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(tmp, path)
+}
+
+pub fn load_usage() -> Option<String> {
+    std::fs::read_to_string(state_path("usage.json")?).ok()
+}
+
+/// This machine's offset from UTC in minutes (`date +%z`: `+0200` is 120),
+/// that the usage overview splits days in.
+pub fn utc_offset_minutes() -> i32 {
+    let out = std::process::Command::new("date").arg("+%z").output();
+    let text = out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned());
+    parse_utc_offset(&text.unwrap_or_default()).unwrap_or(0)
+}
+
+fn parse_utc_offset(z: &str) -> Option<i32> {
+    let (sign, digits) = match z.as_bytes().first()? {
+        b'+' => (1, &z[1..]),
+        b'-' => (-1, &z[1..]),
+        _ => return None,
+    };
+    if digits.len() != 4 {
+        return None;
+    }
+    let h: i32 = digits[..2].parse().ok()?;
+    let m: i32 = digits[2..].parse().ok()?;
+    Some(sign * (h * 60 + m))
+}
+
 fn hostname() -> String {
     std::env::var("HOSTNAME")
         .ok()
@@ -246,5 +286,18 @@ async fn main() -> ExitCode {
             eprintln!("chameleon: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_utc_offset;
+
+    #[test]
+    fn utc_offsets_parse_from_date() {
+        assert_eq!(parse_utc_offset("+0200"), Some(120));
+        assert_eq!(parse_utc_offset("-0930"), Some(-570));
+        assert_eq!(parse_utc_offset("+0000"), Some(0));
+        assert_eq!(parse_utc_offset("CEST"), None);
     }
 }

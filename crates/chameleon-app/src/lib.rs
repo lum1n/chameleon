@@ -15,6 +15,7 @@ mod pump;
 pub mod slot;
 pub mod style;
 pub mod themes;
+pub mod usage;
 pub mod view;
 pub mod wrap;
 

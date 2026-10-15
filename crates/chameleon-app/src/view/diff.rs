@@ -196,8 +196,9 @@ pub fn build(app: &App, view: &DiffView, area: Rect) -> OverlayView {
             Span::new(format!(" {label} "), muted)
         }
     };
+    let git = if view.worktree { "worktree" } else { "git" };
     let tabs = Line::new(vec![
-        tab("git", view.source == DiffSource::Git),
+        tab(git, view.source == DiffSource::Git),
         Span::raw(" "),
         tab("session", view.source == DiffSource::Session),
     ]);
@@ -249,7 +250,12 @@ pub fn build(app: &App, view: &DiffView, area: Rect) -> OverlayView {
             right.extend(empty(&format!("git: {e}"), "s  this session's edits instead"));
         }
         (DiffSource::Git, GitState::Ready(_), None) => {
-            right.extend(empty("working tree clean", "s  this session's edits · r  reload"));
+            let msg = if view.worktree {
+                "nothing changed in the worktree"
+            } else {
+                "working tree clean"
+            };
+            right.extend(empty(msg, "s  this session's edits · r  reload"));
         }
         (DiffSource::Session, _, None) => {
             right.extend(empty(
@@ -320,7 +326,11 @@ pub fn build(app: &App, view: &DiffView, area: Rect) -> OverlayView {
         title: "diff".into(),
         lines,
         footer: Some(Line::styled(
-            "s git/session · n/p file · ]/[ hunk · j/k scroll · r reload · esc",
+            if view.worktree {
+                "s worktree/session · n/p file · ]/[ hunk · j/k scroll · r reload · M merge · X discard · esc"
+            } else {
+                "s git/session · n/p file · ]/[ hunk · j/k scroll · r reload · esc"
+            },
             muted,
         )),
         cursor: None,

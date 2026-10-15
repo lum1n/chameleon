@@ -10,7 +10,7 @@ use crate::composer::Composer;
 use crate::config::{Config, HostConfig, Theme};
 use crate::event::{AppEvent, Effect, ExecTag, HostId, MouseKind};
 use crate::keymap::{Action, Key, KeyCode, Keymap};
-use crate::overlay::Overlay;
+use crate::overlay::{ConfirmAction, Overlay};
 use crate::slot::{Phase, SessionKey, Slot};
 use crate::style::{Line, Style};
 use crate::view::Rect;
@@ -75,6 +75,12 @@ pub struct App {
     pub(crate) problems: Vec<String>,
     /// Where the last frame put things, for mouse clicks.
     pub(crate) layout: Layout,
+    /// What each session spent, by session id (see [`crate::usage`]).
+    pub(crate) usage: std::collections::BTreeMap<String, acc_core::usage::UsageRecord>,
+    pub(crate) usage_dirty: bool,
+    pub(crate) usage_saved_ms: u64,
+    /// The local time zone's offset from UTC, in minutes.
+    pub(crate) utc_offset_min: i32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -134,6 +140,9 @@ impl App {
                 problems.push(format!("hook {:?}: unknown key {k:?}", h.name));
             }
         }
+        if let Some(Err(e)) = cfg.watch.as_ref().map(crate::config::WatchConfig::hook) {
+            problems.push(e);
+        }
         let hosts = cfg
             .hosts()
             .into_iter()
@@ -171,6 +180,10 @@ impl App {
             now_ms: 0,
             problems,
             layout: Layout::default(),
+            usage: Default::default(),
+            usage_dirty: false,
+            usage_saved_ms: 0,
+            utc_offset_min: 0,
         }
     }
 
@@ -431,6 +444,7 @@ impl App {
                 });
             }
         }
+        out.extend(self.save_usage(false));
         // Only repaint when something time-based changed.
         self.dirty = before != self.toasts.len()
             || self
@@ -536,7 +550,7 @@ impl App {
 
     pub(crate) fn action(&mut self, action: Action) -> Vec<Effect> {
         match action {
-            Action::Quit => vec![Effect::Quit],
+            Action::Quit => self.save_usage(true).into_iter().chain([Effect::Quit]).collect(),
             Action::Help => {
                 self.overlay = Some(Overlay::Help { scroll: 0 });
                 Vec::new()
@@ -712,6 +726,30 @@ impl App {
                 Vec::new()
             }
             Action::Approve | Action::Deny => self.quick_answer(action == Action::Approve),
+            Action::Merge | Action::Discard => {
+                let Some(s) = self.selected() else {
+                    return Vec::new();
+                };
+                if s.spec.worktree.is_none() {
+                    self.toast("the session has no worktree of its own", false);
+                    return Vec::new();
+                }
+                let what = if action == Action::Merge {
+                    ConfirmAction::Merge
+                } else {
+                    ConfirmAction::Discard
+                };
+                self.overlay = Some(Overlay::confirm(s.key.clone(), what, s.title()));
+                Vec::new()
+            }
+            Action::Handoff => {
+                self.open_handoff();
+                Vec::new()
+            }
+            Action::Usage => {
+                self.overlay = Some(Overlay::Usage { scroll: 0 });
+                Vec::new()
+            }
             Action::ToggleExpand => {
                 if let Some(s) = self.selected_slot_mut()
                     && let Some(session) = &s.session
@@ -932,7 +970,7 @@ impl App {
             self.overlay = Some(Overlay::permission(key, &p, !approve));
             return Vec::new();
         }
-        let Some(opt) = p.options.first() else {
+        let Some(opt) = crate::overlay::allow_option(&p.options) else {
             return Vec::new();
         };
         self.send(

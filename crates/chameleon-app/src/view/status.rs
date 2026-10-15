@@ -172,7 +172,7 @@ fn bar(app: &App, w: usize, cells: u64) -> Line {
 
 /// `ctx ▰▰▱▱▱▱  31%`: a label, a meter (the permission colour from 80%)
 /// and the percentage; `ctx 31%` with no cells.
-fn gauge(label: &str, pct: u64, cells: u64, app: &App) -> Vec<Span> {
+pub(crate) fn gauge(label: &str, pct: u64, cells: u64, app: &App) -> Vec<Span> {
     let t = app.theme;
     let hot = pct >= 80;
     let value = if hot {
@@ -199,7 +199,7 @@ fn meter(pct: u64, cells: u64) -> String {
     format!("{}{}", "▰".repeat(full), "▱".repeat(cells as usize - full))
 }
 
-fn short(n: u64) -> String {
+pub(crate) fn short(n: u64) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1e6)
     } else if n >= 10_000 {
@@ -211,7 +211,7 @@ fn short(n: u64) -> String {
     }
 }
 
-fn short_window(id: &str, minutes: Option<u64>) -> String {
+pub(crate) fn short_window(id: &str, minutes: Option<u64>) -> String {
     match minutes {
         Some(m) if m % 1440 == 0 && m >= 1440 => format!("{}d", m / 1440),
         Some(m) if m % 60 == 0 => format!("{}h", m / 60),

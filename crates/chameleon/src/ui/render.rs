@@ -434,6 +434,19 @@ mod tests {
                 .any(|r| r.contains("Claude Code") && r.contains("harness"))
         );
         assert!(rows.iter().any(|r| r.contains("┃ optional")));
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("worktree") && r.contains("its own, on a new branch"))
+        );
+        // A worktree is a choice, and the summary says so.
+        key(&mut a, Key::new(KeyCode::Down));
+        key(&mut a, Key::char('l'));
+        let rows = plain(paint(&mut a, w, h));
+        assert!(
+            rows.iter().any(|r| r.contains("in a git worktree of its own")),
+            "{}",
+            rows.join("\n")
+        );
         // On the permission field, Claude's modes are choices.
         key(&mut a, Key::new(KeyCode::Down));
         key(&mut a, Key::new(KeyCode::Down));

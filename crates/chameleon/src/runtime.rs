@@ -81,8 +81,13 @@ impl Runtime {
                 p.display()
             ));
         }
+        let mut app = App::new(cfg, client_tag);
+        app.set_utc_offset(crate::utc_offset_minutes());
+        if let Some(json) = crate::load_usage() {
+            app.load_usage(&json);
+        }
         Ok(Self {
-            app: App::new(cfg, client_tag),
+            app,
             #[cfg(feature = "lua")]
             lua,
             hosts,
@@ -224,6 +229,11 @@ impl Runtime {
                             text: format!("can't save the theme: {e}"),
                             error: true,
                         });
+                    }
+                }
+                Effect::SaveUsage { json } => {
+                    if let Err(e) = crate::save_usage(&json) {
+                        log::warn!("can't save usage: {e}");
                     }
                 }
                 Effect::Terminal { argv } => {
