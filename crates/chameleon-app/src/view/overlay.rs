@@ -332,6 +332,7 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
             input,
         } => panel_view(app, key, id, *selected, input.as_deref(), area),
         Overlay::Diff(view) => crate::view::diff::build(app, view, area),
+        Overlay::Loadout(view) => crate::view::loadout::build(app, view, area),
         Overlay::Usage { scroll } => crate::view::usage::build(app, *scroll, area),
         Overlay::Handoff {
             key,

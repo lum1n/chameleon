@@ -8,6 +8,7 @@ pub mod diff;
 pub mod event;
 pub mod hooks;
 pub mod keymap;
+pub mod loadout;
 pub mod markdown;
 pub mod model;
 pub mod overlay;

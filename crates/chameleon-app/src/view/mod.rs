@@ -18,6 +18,7 @@
 pub mod composer;
 pub mod diff;
 pub mod header;
+pub mod loadout;
 pub mod overlay;
 pub mod sidebar;
 pub mod status;

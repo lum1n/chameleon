@@ -219,9 +219,11 @@ impl App {
         tag: ExecTag,
         result: Result<ExecOutput, String>,
     ) -> Vec<Effect> {
-        if let ExecTag::Merge(id) = &tag {
-            return self.on_merge_done(&SessionKey::new(host, id), result);
-        }
+        let tag = match tag {
+            ExecTag::Merge(id) => return self.on_merge_done(&SessionKey::new(host, &id), result),
+            ExecTag::Loadout(t) => return self.on_loadout_done(host, t, result),
+            tag => tag,
+        };
         let outcome = match result {
             Ok(o) if o.ok() => Ok(o),
             Ok(o) => {
@@ -319,7 +321,7 @@ impl App {
                     }
                 }
             }
-            ExecTag::SpecWrite(_) | ExecTag::Merge(_) => Vec::new(),
+            ExecTag::SpecWrite(_) | ExecTag::Merge(_) | ExecTag::Loadout(_) => Vec::new(),
             ExecTag::Watch(_) => {
                 if let Err(e) = outcome {
                     self.toast(format!("can't watch the session on {host}: {e}"), true);

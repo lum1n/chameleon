@@ -750,6 +750,7 @@ impl App {
                 self.overlay = Some(Overlay::Usage { scroll: 0 });
                 Vec::new()
             }
+            Action::Loadout => self.open_loadout(),
             Action::ToggleExpand => {
                 if let Some(s) = self.selected_slot_mut()
                     && let Some(session) = &s.session

@@ -210,6 +210,8 @@ pub enum Overlay {
         title: String,
     },
     Diff(Box<crate::diff::DiffView>),
+    /// Skills and MCP servers on a host, for every harness there.
+    Loadout(Box<crate::loadout::LoadoutView>),
     /// Picks the value for a palette entry that takes one (`/model`).
     Pick {
         key: SessionKey,
@@ -1138,6 +1140,11 @@ impl App {
             },
             Overlay::Diff(view) => {
                 let (k, fx) = self.diff_key(view, key);
+                keep = k;
+                out = fx;
+            }
+            Overlay::Loadout(view) => {
+                let (k, fx) = self.loadout_key(view, key);
                 keep = k;
                 out = fx;
             }

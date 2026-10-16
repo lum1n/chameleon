@@ -1511,3 +1511,122 @@ fn usage_adds_up_and_is_saved_on_quit() {
     b.load_usage(&json);
     assert_eq!(b.usage_records(), a.usage_records());
 }
+
+const SKILLS_LISTING: &str = "store\t/h/.agents/skills\nskill\ttdd\nf\tname: tdd\nf\tdescription: Test first\n\
+place\tclaude-code\t/h/.claude/skills\town\nlink\tclaude-code\ttdd\t/h/.agents/skills/tdd\n\
+place\tcodex\t/h/.codex/skills\town\nlink\tcodex\ttdd\t/elsewhere/tdd\nown\tcodex\tmine\n\
+place\tpi\t/h/.pi/agent/skills\tnative\n";
+
+fn loadout_runs(fx: &[Effect]) -> Vec<(chameleon_app::loadout::LoadoutTag, acc_core::Exec)> {
+    fx.iter()
+        .filter_map(|e| match e {
+            Effect::Run {
+                tag: ExecTag::Loadout(t),
+                exec,
+                ..
+            } => Some((t.clone(), exec.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn skills_and_mcp_servers_are_linked_and_copied_between_harnesses() {
+    use acc_core::loadout::Scope;
+    use chameleon_app::loadout::LoadoutTag;
+    let mut a = app();
+    a.start(0);
+    let done = |tag: LoadoutTag, result| AppEvent::ExecDone {
+        host: "local".into(),
+        tag: ExecTag::Loadout(tag),
+        result,
+    };
+
+    // L reads the skill store and every harness's MCP config.
+    let runs = loadout_runs(&a.handle(ch('L'), 1));
+    assert!(runs.iter().any(|(t, _)| *t == LoadoutTag::Skills(Scope::User)));
+    assert!(
+        runs.iter()
+            .any(|(t, _)| *t == LoadoutTag::McpRead(Harness::Claude, Scope::User))
+    );
+    assert!(
+        runs.iter()
+            .any(|(t, _)| *t == LoadoutTag::McpRead(Harness::Codex, Scope::User))
+    );
+    assert!(
+        overlay_text(&mut a)
+            .iter()
+            .any(|l| l.contains("reading the skills"))
+    );
+
+    a.handle(done(LoadoutTag::Skills(Scope::User), ok(SKILLS_LISTING)), 2);
+    let text = overlay_text(&mut a).join("\n");
+    assert!(text.contains("❯ tdd") && text.contains("Test first"), "{text}");
+    assert!(text.contains("only in codex"), "{text}");
+
+    // Space on Claude's column unlinks it there; the listing is read again after.
+    let runs = loadout_runs(&a.handle(ch(' '), 3));
+    let (tag, exec) = runs.first().expect("unlinks");
+    assert_eq!(*tag, LoadoutTag::SkillsChanged(Scope::User));
+    assert!(exec.script.contains("rm -f"), "{}", exec.script);
+    let runs = loadout_runs(&a.handle(done(tag.clone(), ok("")), 3));
+    assert_eq!(runs[0].0, LoadoutTag::Skills(Scope::User));
+
+    // Codex has something else in the way: nothing runs.
+    a.handle(ch('l'), 4);
+    assert!(loadout_runs(&a.handle(ch(' '), 4)).is_empty());
+    // A skill only in Codex's directory is adopted into the store.
+    a.handle(ch('j'), 4);
+    let runs = loadout_runs(&a.handle(ch('A'), 4));
+    assert!(runs[0].1.script.contains("mv \"$src\""), "{}", runs[0].1.script);
+
+    // MCP: Claude has fs; space on Codex's column copies it there.
+    a.handle(press(KeyCode::Tab), 5);
+    let claude = r#"{"mcpServers": {"fs": {"command": "npx", "args": ["-y", "fs"]}}, "other": 1}"#;
+    a.handle(
+        done(LoadoutTag::McpRead(Harness::Claude, Scope::User), ok(claude)),
+        5,
+    );
+    a.handle(
+        done(
+            LoadoutTag::McpRead(Harness::Codex, Scope::User),
+            ok("model = \"o3\"\n"),
+        ),
+        5,
+    );
+    let text = overlay_text(&mut a).join("\n");
+    assert!(text.contains("❯ fs") && text.contains("npx -y fs"), "{text}");
+    let runs = loadout_runs(&a.handle(ch(' '), 6));
+    let (tag, exec) = runs.first().expect("writes Codex's config");
+    assert_eq!(*tag, LoadoutTag::McpWrite(Harness::Codex, Scope::User));
+    let written = String::from_utf8(exec.stdin.clone()).unwrap();
+    assert!(
+        written.contains("model = \"o3\"") && written.contains("[mcp_servers.fs]"),
+        "{written}"
+    );
+
+    // n adds a new server to the column's harness, on top of the last edit.
+    a.handle(ch('n'), 7);
+    for c in "docs https://example.com/mcp".chars() {
+        a.handle(ch(c), 7);
+    }
+    let runs = loadout_runs(&a.handle(press(KeyCode::Enter), 7));
+    let written = String::from_utf8(runs[0].1.stdin.clone()).unwrap();
+    assert!(
+        written.contains("[mcp_servers.fs]") && written.contains("example.com/mcp"),
+        "{written}"
+    );
+
+    // X twice deletes fs from every harness that has it; Claude's other keys stay.
+    a.handle(ch('g'), 8);
+    a.handle(ch('j'), 8);
+    assert!(loadout_runs(&a.handle(ch('X'), 8)).is_empty());
+    let runs = loadout_runs(&a.handle(ch('X'), 8));
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    for (_, exec) in &runs {
+        let w = String::from_utf8(exec.stdin.clone()).unwrap();
+        assert!(!w.contains("\"fs\"") && !w.contains("mcp_servers.fs"), "{w}");
+    }
+    a.handle(press(KeyCode::Esc), 9);
+    assert!(a.overlay().is_none());
+}
