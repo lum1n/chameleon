@@ -87,13 +87,12 @@ impl DiffView {
 /// Every file the agent changed in the session (subagents included), in
 /// the order first touched, each edit's hunks in the order made.
 pub fn session_files(session: &Session) -> Vec<FileDiff> {
-    let harness = session.spec().harness;
     let mut out: Vec<FileDiff> = Vec::new();
     for item in session.transcript().items() {
         if item.kind != ItemKind::FileChange || item.status == ItemStatus::Failed {
             continue;
         }
-        let ItemDetail::FileChange { files } = item.detail(harness) else {
+        let ItemDetail::FileChange { files, .. } = item.detail.clone() else {
             continue;
         };
         for f in files {
@@ -155,12 +154,11 @@ impl App {
             self.toast("the session isn't attached", false);
             return Vec::new();
         };
-        let harness = session.spec().harness;
         let want = slot
             .cursor
             .and_then(|c| session.transcript().items().get(c))
-            .and_then(|it| match it.detail(harness) {
-                ItemDetail::FileChange { files } => files.first().map(|f| f.path.clone()),
+            .and_then(|it| match it.detail.clone() {
+                ItemDetail::FileChange { files, .. } => files.first().map(|f| f.path.clone()),
                 _ => None,
             });
         let cwd = session.spec().cwd.clone();

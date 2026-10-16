@@ -124,11 +124,13 @@ fn bar(app: &App, w: usize, cells: u64) -> Line {
                 && i.kind != ItemKind::Reasoning
         });
         if let Some(i) = running {
-            let d = i.detail(session.spec().harness);
+            let d = i.detail.clone();
             let what = match d {
-                acc_core::item::ItemDetail::Tool { name, title, .. } => format!("{name} {title}"),
+                acc_core::item::ItemDetail::Tool {
+                    tool: name, title, ..
+                } => format!("{name} {title}"),
                 acc_core::item::ItemDetail::Command { command, .. } => command,
-                acc_core::item::ItemDetail::FileChange { files } => {
+                acc_core::item::ItemDetail::FileChange { files, .. } => {
                     files.first().map(|f| f.path.clone()).unwrap_or_default()
                 }
                 acc_core::item::ItemDetail::Subagent {

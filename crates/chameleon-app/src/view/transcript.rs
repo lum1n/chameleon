@@ -68,7 +68,7 @@ pub fn build(app: &mut App, rect: Rect) -> PaneView {
         *children.entry(p).or_default() += 1;
     }
     let header = scope
-        .map(|id| agent_header(items, id, ctx.harness, &theme, spin, w))
+        .map(|id| agent_header(items, id, &theme, spin, w))
         .unwrap_or_default();
     let h = h.saturating_sub(header.len());
 
@@ -327,7 +327,7 @@ pub(crate) fn request_preview(
         .item_id
         .as_ref()
         .and_then(|id| session.transcript().get(id))
-        .map(|item| item.detail(session.spec().harness));
+        .map(|item| item.detail.clone());
     match detail {
         Some(ItemDetail::Command {
             command, cwd: dir, ..
@@ -340,14 +340,17 @@ pub(crate) fn request_preview(
                 raw.push(Line::styled(format!("in {d}"), muted));
             }
         }
-        Some(ItemDetail::FileChange { files }) => {
+        Some(ItemDetail::FileChange { files, .. }) => {
             for f in &files {
                 raw.push(file_head(f, theme));
                 raw.extend(hunks(f, theme));
             }
         }
         Some(ItemDetail::Tool {
-            name, title, input, ..
+            tool: name,
+            title,
+            input,
+            ..
         }) => {
             raw.push(Line::new(vec![
                 Span::new(format!("{name}  "), Style::new().fg(theme.tool)),
@@ -450,14 +453,7 @@ fn next_visible<'a>(items: &'a [Item], scope: Option<&str>, idx: usize) -> Optio
 /// find where the config is loaded and parsed
 /// ─────────────────────────────────────────────── esc back · [ ] prev/next
 /// ```
-fn agent_header(
-    items: &[Item],
-    id: &str,
-    harness: Harness,
-    theme: &Theme,
-    spin: &str,
-    w: usize,
-) -> Vec<Line> {
+fn agent_header(items: &[Item], id: &str, theme: &Theme, spin: &str, w: usize) -> Vec<Line> {
     let muted = Style::new().fg(theme.muted);
     let mut chain = Vec::new();
     let mut at = Some(id);
@@ -480,7 +476,7 @@ fn agent_header(
         } else {
             muted
         };
-        crumbs.push(Span::new(agent_name(item, harness), style));
+        crumbs.push(Span::new(agent_name(item), style));
     }
     let n = items.iter().filter(|it| it.parent.as_deref() == Some(id)).count();
     let (glyph, word, tone) = match last.status {
@@ -497,7 +493,7 @@ fn agent_header(
     top.push(Span::raw(" ".repeat(w.saturating_sub(top.width() + meta_w))));
     top.spans.extend(meta);
     let mut out = vec![top];
-    if let ItemDetail::Subagent { description, .. } = last.detail(harness)
+    if let ItemDetail::Subagent { description, .. } = last.detail.clone()
         && !description.trim().is_empty()
     {
         out.push(Line::styled(
@@ -514,8 +510,8 @@ fn agent_header(
 }
 
 /// A subagent run's name: its agent type, or "Task".
-pub(crate) fn agent_name(item: &Item, harness: Harness) -> String {
-    match item.detail(harness) {
+pub(crate) fn agent_name(item: &Item) -> String {
+    match item.detail.clone() {
         ItemDetail::Subagent { agent: Some(a), .. } if !a.is_empty() => a,
         _ => "Task".to_owned(),
     }
@@ -677,7 +673,7 @@ fn step(item: &Item, look: Look, ctx: &ItemCtx, cw: usize) -> Vec<Line> {
     };
     let name = |n: &str| Span::new(format!("{n}  "), muted);
     let mut out = Vec::new();
-    match item.detail(ctx.harness) {
+    match item.detail.clone() {
         ItemDetail::Command {
             command,
             output,
@@ -697,10 +693,7 @@ fn step(item: &Item, look: Look, ctx: &ItemCtx, cw: usize) -> Vec<Line> {
             out.extend(output_lines(&output, look, bad, item.status, ctx, cw));
         }
         ItemDetail::Tool {
-            name: tool,
-            title,
-            output,
-            ..
+            tool, title, output, ..
         } => {
             let bad = failed(None);
             let output = output.unwrap_or_else(|| item.text.clone());
@@ -714,7 +707,7 @@ fn step(item: &Item, look: Look, ctx: &ItemCtx, cw: usize) -> Vec<Line> {
             out.extend(head_line(head, meta, look, has_more(&output), cw, muted));
             out.extend(output_lines(&output, look, bad, item.status, ctx, cw));
         }
-        ItemDetail::FileChange { files } => {
+        ItemDetail::FileChange { files, .. } => {
             use acc_core::item::FileChangeKind::*;
             let bad = failed(None);
             for (i, f) in files.iter().enumerate() {

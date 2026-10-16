@@ -248,9 +248,7 @@ fn a_subagent_opens_as_its_own_conversation_and_esc_goes_back() {
         let cmd = transcript
             .items()
             .iter()
-            .find(|i| {
-                matches!(i.detail(Harness::Claude), ItemDetail::Command { command, .. } if command.contains(marker))
-            })
+            .find(|i| matches!(&i.detail, ItemDetail::Command { command, .. } if command.contains(marker)))
             .expect("the subagent's ls command is in the transcript");
         let sub_id = cmd.parent.clone().expect("the command belongs to a subagent run");
         assert!(transcript.subagents().any(|s| s.id == sub_id));

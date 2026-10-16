@@ -1461,19 +1461,11 @@ impl App {
         let Some(slot) = self.slots.iter().find(|s| &s.key == key) else {
             return Vec::new();
         };
-        let harness = slot.harness();
-        let program = match acc_core::multiplexer::tui::launch(harness, None) {
-            Ok(p) => p,
-            Err(e) => {
-                self.toast(e.to_string(), true);
-                return Vec::new();
-            }
-        };
-        let argv = program.argv();
+        // A fresh session, like acc's `tui_command`: never the headless one's.
         let line = format!(
             "cd {} && exec {}",
             acc_core::shell::quote(&slot.spec.cwd),
-            acc_core::shell::join(argv.iter().map(String::as_str))
+            acc_core::shell::quote(slot.harness().program())
         );
         let argv = match self
             .host(&key.host)
@@ -1565,7 +1557,6 @@ pub fn agent_ids(session: &acc_core::session::Session) -> Vec<String> {
 /// Main, then every subagent run, nested under the one it ran in.
 pub fn agent_rows(session: &acc_core::session::Session) -> Vec<AgentRow> {
     let t = session.transcript();
-    let harness = session.spec().harness;
     let count = |id: Option<&str>| t.items().iter().filter(|it| it.parent.as_deref() == id).count();
     let mut rows = vec![AgentRow {
         id: None,
@@ -1582,14 +1573,14 @@ pub fn agent_rows(session: &acc_core::session::Session) -> Vec<AgentRow> {
             depth += 1;
             at = p.parent.as_deref();
         }
-        let description = match item.detail(harness) {
+        let description = match item.detail.clone() {
             ItemDetail::Subagent { description, .. } => description,
             _ => String::new(),
         };
         rows.push(AgentRow {
             id: Some(item.id.clone()),
             depth,
-            name: crate::view::transcript::agent_name(item, harness),
+            name: crate::view::transcript::agent_name(item),
             description,
             status: Some(item.status),
             items: count(Some(&item.id)),
