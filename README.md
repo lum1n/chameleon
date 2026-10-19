@@ -32,10 +32,10 @@ tally of every session's state (`⚠1 ⠋2 ·1`) so nothing gets lost while it's
 
 ## Build
 
-chameleon depends on `acc-core` as a sibling checkout (`../acc`), until acc is published.
+chameleon depends on `acc-core` from [GitHub](https://github.com/lum1n/acc), which cargo fetches
+itself, until acc is published.
 
 ```sh
-git clone https://github.com/lum1n/acc ../acc
 cargo build --release
 ./target/release/chameleon
 ```
