@@ -10,8 +10,7 @@ repository = "https://github.com/lum1n/chameleon"
 publish = false
 
 [workspace.dependencies]
-# Switch to `git = "https://github.com/lum1n/acc"` once acc is pinned.
-acc-core = { path = "../acc/crates/acc-core" }
+acc-core = { git = "https://github.com/lum1n/acc" }
 chameleon-app = { path = "crates/chameleon-app" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

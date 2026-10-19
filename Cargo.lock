@@ -5,6 +5,7 @@ version = 4
 [[package]]
 name = "acc-core"
 version = "0.1.0"
+source = "git+https://github.com/lum1n/acc#bb47b556050f132e7acce5d54bc5cbe6b46ba7e6"
 dependencies = [
  "base64",
  "serde",
