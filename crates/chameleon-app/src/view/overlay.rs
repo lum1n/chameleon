@@ -657,6 +657,8 @@ fn permission_view(
         }
     }
     lines.push(Line::default());
+    // A question's options may say more about themselves.
+    let asked = acc_core::question::parse(&p.input).into_iter().next();
     for (i, o) in p.options.iter().enumerate() {
         let ot = option_tone(o, &theme);
         let chosen = i == selected && text.is_empty();
@@ -665,11 +667,19 @@ fn permission_view(
         } else {
             Style::new()
         };
-        lines.push(padded(Line::new(vec![
+        let mut l = Line::new(vec![
             Span::new(if chosen { "❯ " } else { "  " }, Style::new().fg(ot).bold()),
             Span::new(format!("{}  ", i + 1), muted),
             Span::new(o.label.clone(), label),
-        ])));
+        ]);
+        let about = asked
+            .as_ref()
+            .and_then(|q| q.options.iter().find(|qo| qo.label == o.label))
+            .and_then(|qo| qo.description.as_ref());
+        if let Some(d) = about {
+            l.push(Span::new(format!("  {d}"), muted));
+        }
+        lines.extend(wrap_hang(&l, w, &Line::raw("     ")).into_iter().map(padded));
     }
     let mut cursor = None;
     if question {

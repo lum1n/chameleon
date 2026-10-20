@@ -236,11 +236,13 @@ fn pending_lines(session: &acc_core::session::Session, theme: &Theme, w: usize) 
         let question = p.kind == acc_core::BlockKind::Question;
         let mut body = wrap_line(&Line::styled(p.title.clone(), Style::new().bold()), cw, "");
         let preview = request_preview(session, p, theme, cw);
-        let more = preview.len() > 3;
-        body.extend(preview.into_iter().take(3));
-        if more {
-            body.push(Line::styled("…", Style::new().fg(theme.muted)));
-        }
+        // A question's preview is the questions after the options shown.
+        let (before, after) = if question {
+            (Vec::new(), preview)
+        } else {
+            (preview, Vec::new())
+        };
+        body.extend(capped(before, 3, theme));
         let mut opts = Line::default();
         for (i, o) in p.options.iter().enumerate() {
             if i > 0 {
@@ -257,6 +259,7 @@ fn pending_lines(session: &acc_core::session::Session, theme: &Theme, w: usize) 
                 Style::new().fg(theme.muted),
             ));
         }
+        body.extend(capped(after, 6, theme));
         let (title, footer) = if question {
             ("? question", "enter: answer")
         } else {
@@ -266,6 +269,15 @@ fn pending_lines(session: &acc_core::session::Session, theme: &Theme, w: usize) 
         out.extend(card(body, title, footer, theme.permission, theme.muted, w));
     }
     out
+}
+
+/// The first `n` of `lines`, with an ellipsis when some are cut.
+fn capped(mut lines: Vec<Line>, n: usize, theme: &Theme) -> Vec<Line> {
+    if lines.len() > n {
+        lines.truncate(n);
+        lines.push(Line::styled("…", Style::new().fg(theme.muted)));
+    }
+    lines
 }
 
 /// `body` in a rounded box `w` wide, with a title and a footer in its rules.
@@ -321,6 +333,15 @@ pub(crate) fn request_preview(
     w: usize,
 ) -> Vec<Line> {
     let muted = Style::new().fg(theme.muted);
+    if p.kind == acc_core::BlockKind::Question {
+        let qs = acc_core::question::parse(&p.input);
+        if !qs.is_empty() {
+            return question_lines(&qs[1..], theme)
+                .iter()
+                .flat_map(|l| wrap_line(l, w, "  "))
+                .collect();
+        }
+    }
     let cwd = session.spec().cwd.as_str();
     let mut raw: Vec<Line> = Vec::new();
     let detail = p
@@ -363,6 +384,34 @@ pub(crate) fn request_preview(
         }
     }
     raw.iter().flat_map(|l| wrap_line(l, w, "  ")).collect()
+}
+
+/// Questions as text, rather than their JSON: each under its header,
+/// with its choices below.
+///
+/// ```text
+/// Extras  Which extras?
+///   Cache · Search · pick any
+/// ```
+fn question_lines(qs: &[acc_core::question::Question], theme: &Theme) -> Vec<Line> {
+    let muted = Style::new().fg(theme.muted);
+    let mut out = Vec::new();
+    for q in qs {
+        let mut head = Line::default();
+        if let Some(h) = &q.header {
+            head.push(Span::new(format!("{h}  "), Style::new().fg(theme.permission)));
+        }
+        head.push(Span::raw(q.question.clone()));
+        out.push(head);
+        let mut picks: Vec<&str> = q.options.iter().map(|o| o.label.as_str()).collect();
+        if q.multi_select {
+            picks.push("pick any");
+        }
+        if !picks.is_empty() {
+            out.push(Line::styled(format!("  {}", picks.join(" · ")), muted));
+        }
+    }
+    out
 }
 
 /// `key: value` lines of a JSON object (a tool's input).
