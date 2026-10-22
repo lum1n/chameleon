@@ -1,8 +1,9 @@
 //! The diff viewer: what changed in a session's repository (`git diff`
 //! against HEAD, untracked files included, run on the session's host; for
 //! a session in a worktree of its own, everything it changed there since
-//! the worktree was made) or everything the agent edited in this session,
-//! merged per file.
+//! the worktree was made), everything the agent edited in this session,
+//! merged per file, or, where the harness diffs its turns (Codex), what the
+//! latest turn changed.
 
 use acc_core::event::ItemKind;
 use acc_core::item::{FileChangeKind, FileDiff, ItemDetail};
@@ -13,7 +14,7 @@ use crate::event::{Effect, ExecOutput, ExecTag};
 use crate::keymap::{Key, KeyCode};
 use crate::model::App;
 use crate::overlay::Overlay;
-use crate::slot::SessionKey;
+use crate::slot::{SessionKey, Slot};
 
 /// Bytes of `git diff` read at most; a diff this big isn't read in a TUI.
 const MAX_BYTES: usize = 4_000_000;
@@ -26,6 +27,8 @@ pub enum DiffSource {
     Git,
     /// The agent's edits in this session.
     Session,
+    /// The latest turn's diff, as the harness reported it.
+    Turn,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,13 +59,17 @@ pub struct DiffView {
 
 impl DiffView {
     /// The files of the source shown.
-    pub fn files(&self, session: Option<&Session>) -> Vec<FileDiff> {
+    pub fn files(&self, slot: Option<&Slot>) -> Vec<FileDiff> {
         match self.source {
             DiffSource::Git => match &self.git {
                 GitState::Ready(files) => files.clone(),
                 _ => Vec::new(),
             },
-            DiffSource::Session => session.map(session_files).unwrap_or_default(),
+            DiffSource::Session => slot
+                .and_then(|s| s.session.as_ref())
+                .map(session_files)
+                .unwrap_or_default(),
+            DiffSource::Turn => slot.and_then(|s| s.turn_diff.clone()).unwrap_or_default(),
         }
     }
 
@@ -181,7 +188,7 @@ impl App {
             worktree,
         };
         if view.source == DiffSource::Session {
-            let files = view.files(Some(session));
+            let files = view.files(Some(slot));
             view.select_wanted(&files);
         }
         self.overlay = Some(Overlay::Diff(Box::new(view)));
@@ -219,12 +226,10 @@ impl App {
 
     /// Keys of the diff viewer; false closes it.
     pub(crate) fn diff_key(&mut self, view: &mut DiffView, key: Key) -> (bool, Vec<Effect>) {
-        let session = self
-            .slots
-            .iter()
-            .find(|s| s.key == view.key)
-            .and_then(|s| s.session.as_ref());
-        let files = view.files(session);
+        let slot = self.slots.iter().find(|s| s.key == view.key);
+        let session = slot.and_then(|s| s.session.as_ref());
+        let has_turn = slot.is_some_and(|s| s.turn_diff.is_some());
+        let files = view.files(slot);
         let n = files.len();
         let (_, body_w, rows) = crate::view::diff::layout(self.size.0, self.size.1);
         let body = files
@@ -273,9 +278,13 @@ impl App {
                 None => {}
             },
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('s') => {
-                view.source = match view.source {
-                    DiffSource::Git => DiffSource::Session,
-                    DiffSource::Session => DiffSource::Git,
+                let back = key.code == KeyCode::BackTab;
+                view.source = match (view.source, back) {
+                    (DiffSource::Git, false) | (DiffSource::Turn, true) => DiffSource::Session,
+                    (DiffSource::Session, false) if has_turn => DiffSource::Turn,
+                    (DiffSource::Git, true) if has_turn => DiffSource::Turn,
+                    (DiffSource::Git, true) => DiffSource::Session,
+                    _ => DiffSource::Git,
                 };
                 view.chosen = true;
                 view.file = 0;
