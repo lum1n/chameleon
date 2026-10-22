@@ -96,6 +96,7 @@ impl App {
                 s.set_policy(policy);
                 let exec = s.status_exec();
                 slot.session = Some(s);
+                slot.plan = None;
                 slot.phase = Phase::Attaching;
                 slot.error = None;
                 let (host, id) = (slot.key.host.clone(), slot.key.id.clone());
@@ -582,6 +583,10 @@ impl App {
             for u in &updates {
                 if let Some(change) = &u.item {
                     slot.bump(change.id());
+                }
+                // Replayed too: the log is the only place the plan is kept.
+                if let Event::Plan(plan) = &u.event {
+                    slot.plan = Some(plan.clone());
                 }
                 if u.replay {
                     continue;

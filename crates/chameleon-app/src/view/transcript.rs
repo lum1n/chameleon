@@ -334,7 +334,7 @@ pub(crate) fn request_preview(
 ) -> Vec<Line> {
     let muted = Style::new().fg(theme.muted);
     if p.kind == acc_core::BlockKind::Question {
-        let qs = acc_core::question::parse(&p.input);
+        let qs = acc_core::question::parse(&p.native);
         if !qs.is_empty() {
             return question_lines(&qs[1..], theme)
                 .iter()
@@ -344,11 +344,13 @@ pub(crate) fn request_preview(
     }
     let cwd = session.spec().cwd.as_str();
     let mut raw: Vec<Line> = Vec::new();
-    let detail = p
-        .item_id
-        .as_ref()
-        .and_then(|id| session.transcript().get(id))
-        .map(|item| item.detail.clone());
+    // The request's own detail has its arguments merged over the item's.
+    let detail = p.detail.clone().or_else(|| {
+        p.item_id
+            .as_ref()
+            .and_then(|id| session.transcript().get(id))
+            .map(|item| item.detail.clone())
+    });
     match detail {
         Some(ItemDetail::Command {
             command, cwd: dir, ..
@@ -380,7 +382,7 @@ pub(crate) fn request_preview(
             raw.extend(json_lines(&input, muted));
         }
         Some(ItemDetail::Text) | Some(ItemDetail::Subagent { .. }) | None => {
-            raw.extend(json_lines(&p.input, muted))
+            raw.extend(json_lines(&p.native, muted))
         }
     }
     raw.iter().flat_map(|l| wrap_line(l, w, "  ")).collect()

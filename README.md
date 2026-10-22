@@ -70,6 +70,11 @@ Rust 1.88 or newer. The optional Lua runtime needs `--features lua`.
 | `r` | re-list sessions on every host |
 | `?` | help, with your bindings and config problems |
 
+While the agent keeps a to-do list (Claude's `TodoWrite`, Codex's plan, an ACP agent's plan) and
+has work left on it, the list is pinned under the transcript. Sessions take the name their harness
+gives them, and a fresh Claude session is named from its first prompt, as Claude's
+own TUI does.
+
 Every key is remappable. Sessions are listed oldest first and keep their place, so a
 session's jump key (`1`–`0`) stays the same until a session above it is deleted.
 

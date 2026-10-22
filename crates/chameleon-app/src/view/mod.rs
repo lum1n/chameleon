@@ -2,8 +2,9 @@
 //! terminal types. The binary maps `Line`s onto ratatui and paints them.
 //!
 //! The frame is one header line, a body and one status line. The body is
-//! the session list on the left (optional), the transcript and, under a
-//! rule, the prompt. Panes have no borders; the panes without focus fade.
+//! the session list on the left (optional), the transcript with the
+//! agent's plan pinned under it while it has work left and, under a rule,
+//! the prompt. Panes have no borders; the panes without focus fade.
 //!
 //! ```text
 //!  ◆ chameleon  fix the tests  ~/proj · Claude Code · opus        ⚠1 ⠋1 ·2
@@ -20,6 +21,7 @@ pub mod diff;
 pub mod header;
 pub mod loadout;
 pub mod overlay;
+pub mod plan;
 pub mod sidebar;
 pub mod status;
 pub mod transcript;
@@ -104,6 +106,8 @@ pub struct Screen {
     pub chrome: Vec<Placed>,
     pub sidebar: Option<PaneView>,
     pub transcript: PaneView,
+    /// The agent's to-do list, pinned under the transcript.
+    pub plan: Option<PaneView>,
     pub composer: PaneView,
     pub status: Line,
     pub overlay: Option<OverlayView>,
@@ -112,6 +116,8 @@ pub struct Screen {
 
 /// Narrower than this, the session list only shows while it has focus.
 const SIDEBAR_MIN_COLS: u16 = 50;
+/// Transcript rows the pinned plan always leaves.
+const PLAN_MIN_TRANSCRIPT: usize = 6;
 /// Lines the prompt grows to before it scrolls.
 const COMPOSER_MAX_LINES: usize = 6;
 
@@ -179,7 +185,27 @@ impl App {
         let composer_y = (body_y + body_h).saturating_sub(composer_h);
         let composer_rect = Rect::new(main_x, composer_y, main_w, composer_h);
         let rule_y = composer_y.saturating_sub(1);
-        let transcript_rect = Rect::new(text_x, body_y, text_w, rule_y.saturating_sub(body_y));
+        let transcript_h = rule_y.saturating_sub(body_y);
+
+        // The plan takes the transcript's last rows while it leaves the
+        // conversation room, and only over the main conversation.
+        let mut plan_lines = self
+            .selected()
+            .filter(|s| s.view.is_empty() && s.session.is_some())
+            .and_then(|s| s.plan.as_ref())
+            .map(|p| plan::lines(p, &theme, text_w as usize))
+            .unwrap_or_default();
+        if plan_lines.len() + PLAN_MIN_TRANSCRIPT > transcript_h as usize {
+            plan_lines.clear();
+        }
+        let plan_h = plan_lines.len() as u16;
+        let transcript_rect = Rect::new(text_x, body_y, text_w, transcript_h - plan_h);
+        let plan = (plan_h > 0).then(|| PaneView {
+            rect: Rect::new(text_x, rule_y - plan_h, text_w, plan_h),
+            lines: plan_lines,
+            focused: self.focus == Pane::Transcript,
+            ..PaneView::default()
+        });
 
         let sidebar = show_sidebar.then(|| sidebar::build(self, sidebar_rect));
         let transcript = transcript::build(self, transcript_rect);
@@ -234,10 +260,16 @@ impl App {
 
         let mut sidebar = sidebar;
         let mut transcript = transcript;
+        let mut plan = plan;
         let mut composer = composer;
-        for pane in [sidebar.as_mut(), Some(&mut transcript), Some(&mut composer)]
-            .into_iter()
-            .flatten()
+        for pane in [
+            sidebar.as_mut(),
+            Some(&mut transcript),
+            plan.as_mut(),
+            Some(&mut composer),
+        ]
+        .into_iter()
+        .flatten()
         {
             if !pane.focused {
                 fade(&mut pane.lines, theme.agent, pane.bg.unwrap_or(theme.bg));
@@ -255,6 +287,7 @@ impl App {
             chrome,
             sidebar,
             transcript,
+            plan,
             composer,
             status,
             overlay,

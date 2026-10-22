@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use acc_core::detached::Status;
-use acc_core::event::{ItemId, Panel};
+use acc_core::event::{ItemId, Panel, Plan};
 use acc_core::session::{Session, SessionSpec};
 use acc_core::state::{BlockKind, RunState};
 
@@ -130,6 +130,8 @@ pub struct Slot {
     pub log_size: Option<u64>,
     /// The latest dialog the harness answered with, by palette entry.
     pub panels: HashMap<String, Panel>,
+    /// The agent's latest to-do list for the main conversation.
+    pub plan: Option<Plan>,
 }
 
 impl Slot {
@@ -156,6 +158,7 @@ impl Slot {
             error: None,
             log_size: None,
             panels: HashMap::new(),
+            plan: None,
         }
     }
 

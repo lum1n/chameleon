@@ -189,6 +189,9 @@ pub fn draw(frame: &mut Frame, screen: &Screen, theme: &Theme) {
         pane(frame, sb, theme);
     }
     pane(frame, &screen.transcript, theme);
+    if let Some(plan) = &screen.plan {
+        pane(frame, plan, theme);
+    }
     pane(frame, &screen.composer, theme);
     let status = RRect::new(0, full.height - 1, full.width, 1);
     frame.render_widget(Paragraph::new(line(&screen.status)), status);

@@ -1681,3 +1681,40 @@ fn skills_and_mcp_servers_are_linked_and_copied_between_harnesses() {
     a.handle(press(KeyCode::Esc), 9);
     assert!(a.overlay().is_none());
 }
+
+#[test]
+fn the_agents_plan_is_pinned_under_the_transcript_until_it_is_done() {
+    let mut a = app();
+    let key = claude_ready(&mut a);
+    let todos = |statuses: [&str; 3]| {
+        let todos: Vec<_> = ["Read the test", "Fix the parser", "Run the suite"]
+            .iter()
+            .zip(statuses)
+            .map(|(c, s)| serde_json::json!({"content": c, "status": s, "activeForm": c}))
+            .collect();
+        serde_json::json!({"type": "assistant", "message": {"id": "m_t", "type": "message", "role": "assistant", "content": [{"type": "tool_use", "id": format!("toolu_{}", statuses.join("")), "name": "TodoWrite", "input": {"todos": todos}}]}, "parent_tool_use_id": null, "session_id": "s"}).to_string()
+    };
+    assert!(a.screen().plan.is_none());
+
+    feed_line(&mut a, &key, &todos(["completed", "in_progress", "pending"]), 3);
+    let screen = a.screen();
+    let plan = screen.plan.as_ref().expect("a plan with work left is shown");
+    let text: Vec<String> = plan.lines.iter().map(|l| l.text()).collect();
+    assert_eq!(
+        text,
+        [
+            "plan 1/3",
+            "✓ Read the test",
+            "◐ Fix the parser",
+            "○ Run the suite"
+        ]
+    );
+    assert_eq!(
+        screen.transcript.rect.y + screen.transcript.rect.h,
+        plan.rect.y,
+        "the plan takes the transcript's last rows"
+    );
+
+    feed_line(&mut a, &key, &todos(["completed", "completed", "completed"]), 4);
+    assert!(a.screen().plan.is_none(), "a finished plan goes away");
+}
