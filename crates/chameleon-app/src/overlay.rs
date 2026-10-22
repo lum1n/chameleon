@@ -412,7 +412,7 @@ pub fn steps(p: &Permission) -> Vec<acc_core::question::Question> {
     if p.kind != BlockKind::Question {
         return Vec::new();
     }
-    let qs = acc_core::question::parse(&p.input);
+    let qs = acc_core::question::parse(&p.native);
     if qs.len() > 1 || qs.iter().any(|q| q.multi_select) {
         qs
     } else {

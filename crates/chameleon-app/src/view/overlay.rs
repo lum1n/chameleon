@@ -658,7 +658,7 @@ fn permission_view(
     }
     lines.push(Line::default());
     // A question's options may say more about themselves.
-    let asked = acc_core::question::parse(&p.input).into_iter().next();
+    let asked = acc_core::question::parse(&p.native).into_iter().next();
     for (i, o) in p.options.iter().enumerate() {
         let ot = option_tone(o, &theme);
         let chosen = i == selected && text.is_empty();
