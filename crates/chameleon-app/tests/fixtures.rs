@@ -1784,8 +1784,8 @@ fn a_narrow_terminal_with_the_sidebar_focused_draws() {
 }
 
 #[test]
-fn the_header_falls_back_to_an_emoji_without_a_nerd_font() {
-    assert!(app().screen().header.text().starts_with(" \u{f314} chameleon "));
+fn the_header_falls_back_to_an_emoji_and_the_name_without_a_nerd_font() {
+    assert!(app().screen().header.text().starts_with(" \u{f314} no session"));
     let mut a = App::new(Config::parse("[general]\nnerd_font = false").unwrap(), "test");
     assert!(a.screen().header.text().starts_with(" 🦎 chameleon "));
 }

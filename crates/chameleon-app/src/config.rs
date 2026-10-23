@@ -64,8 +64,8 @@ pub struct General {
     /// How the transcript sets messages apart; `B` cycles it.
     #[serde(default)]
     pub blocks: Blocks,
-    /// Draw Nerd Font glyphs (the chameleon in the header); false falls
-    /// back to emoji for terminals without one.
+    /// Draw Nerd Font glyphs (the chameleon heading the header); false
+    /// falls back to an emoji and the name, for terminals without one.
     #[serde(default = "d_true")]
     pub nerd_font: bool,
 }

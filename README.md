@@ -10,7 +10,7 @@ quitting, several clients can attach to one session, and the phone app
 [Sessh](https://github.com/lum1n/sessh-swift) sees the same sessions.
 
 ```
-  chameleon › fix the tests  ~/proj · Claude Code · opus                 ⚠1 ⠋2 ·1
+  › fix the tests  ~/proj · Claude Code · opus                 ⚠1 ⠋2 ·1
 ────────────────────────┬───────────────────────────────────────────────────────────
  local ─────────────── 3│ ▎ fix the failing tests
 ▌1 ⚠ fix the te… claude │
@@ -91,7 +91,7 @@ show_sidebar = true    # start with the session list open (b toggles it)
 sidebar_width = 34
 default_harness = "claude-code"
 blocks = "bars"         # how messages are set apart: bars, cards, plain (B cycles)
-nerd_font = true       # Nerd Font glyphs (the chameleon in the header); false uses emoji
+nerd_font = true       # Nerd Font glyphs (the chameleon in the header); false: emoji and name
 
 [[hosts]]
 name = "local"         # this machine (implied when no hosts are listed)

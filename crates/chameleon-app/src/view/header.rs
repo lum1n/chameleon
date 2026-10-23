@@ -10,16 +10,14 @@ use crate::wrap::{truncate, width};
 pub fn build(app: &App, w: usize) -> Line {
     let t = app.theme;
     let muted = Style::new().fg(t.muted);
-    // openSUSE's Geeko, a chameleon, from Nerd Fonts; Unicode has only a lizard.
-    let icon = if app.cfg.general.nerd_font {
-        "\u{f314}"
+    // openSUSE's Geeko, a chameleon, from Nerd Fonts, stands in for the
+    // name; Unicode has only a lizard, which needs the name beside it.
+    let mark = if app.cfg.general.nerd_font {
+        " \u{f314} "
     } else {
-        "🦎"
+        " 🦎 chameleon "
     };
-    let mut line = Line::new(vec![Span::new(
-        format!(" {icon} chameleon "),
-        Style::new().fg(t.accent).bold(),
-    )]);
+    let mut line = Line::new(vec![Span::new(mark, Style::new().fg(t.accent).bold())]);
 
     // Right: how many sessions are in each state, loudest first.
     let mut right = Line::default();

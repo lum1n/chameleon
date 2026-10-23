@@ -7,7 +7,7 @@
 //! the prompt. Panes have no borders; the panes without focus fade.
 //!
 //! ```text
-//!   chameleon  fix the tests  ~/proj · Claude Code · opus        ⚠1 ⠋1 ·2
+//!    fix the tests  ~/proj · Claude Code · opus        ⚠1 ⠋1 ·2
 //! ─────────────────┬─────────────────────────────────────────────────────────
 //! ▌1 ⚠ fix the te… │ ▎fix the failing tests
 //!  2 ⠋ bump deps   │
