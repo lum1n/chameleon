@@ -585,8 +585,12 @@ impl App {
                     slot.bump(change.id());
                 }
                 // Replayed too: the log is the only place the plan is kept.
-                if let Event::Plan(plan) = &u.event {
-                    slot.plan = Some(plan.clone());
+                match &u.event {
+                    Event::Plan(plan) => slot.plan = Some(plan.clone()),
+                    Event::TurnDiff { diff, .. } => {
+                        slot.turn_diff = Some(acc_core::item::parse_unified(diff, ""));
+                    }
+                    _ => {}
                 }
                 if u.replay {
                     continue;

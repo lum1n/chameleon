@@ -1118,6 +1118,61 @@ fn the_diff_viewer_shows_the_repository_and_the_sessions_edits() {
 }
 
 #[test]
+fn the_diff_viewer_shows_codexs_turn_diff() {
+    use chameleon_app::diff::DiffSource;
+    let mut a = app();
+    let (key, _) = launch(&mut a, Harness::Codex, "go");
+    a.handle(
+        AppEvent::ExecDone {
+            host: key.host.clone(),
+            tag: ExecTag::Launch(key.id.clone()),
+            result: ok("9\n"),
+        },
+        1,
+    );
+    feed(&mut a, &key, CODEX_HANDSHAKE, 2);
+
+    // Before the harness diffs a turn there are two sources, as on any harness.
+    a.handle(ctrl('d'), 3);
+    a.handle(ch('s'), 3);
+    a.handle(ch('s'), 3);
+    assert_eq!(diff_view(&a).source, DiffSource::Git);
+    assert!(!overlay_text(&mut a).join("\n").contains(" turn "));
+    a.handle(press(KeyCode::Esc), 3);
+
+    // A turn diff (a shell command's change too, which no edit item has).
+    let diff = serde_json::to_string(GIT_DIFF).unwrap();
+    let line = format!(
+        r#"{{"method":"turn/diff/updated","params":{{"threadId":"01a125ba-bc10-7a62-8401-c7b0088728d3","turnId":"t1","diff":{diff}}}}}"#
+    );
+    feed_line(&mut a, &key, &line, 4);
+    a.handle(ctrl('d'), 5);
+    a.handle(ch('s'), 5);
+    a.handle(ch('s'), 5);
+    assert_eq!(diff_view(&a).source, DiffSource::Turn);
+    let joined = overlay_text(&mut a).join("\n");
+    assert!(joined.contains(" turn "), "{joined}");
+    assert!(
+        joined.contains("src/lib.rs") && joined.contains("notes.md"),
+        "{joined}"
+    );
+    // s comes back round to git; shift-tab goes the other way.
+    a.handle(ch('s'), 6);
+    assert_eq!(diff_view(&a).source, DiffSource::Git);
+    a.handle(press(KeyCode::BackTab), 6);
+    assert_eq!(diff_view(&a).source, DiffSource::Turn);
+
+    // A newer diff replaces it: here, the turn changed nothing.
+    let line = r#"{"method":"turn/diff/updated","params":{"threadId":"01a125ba-bc10-7a62-8401-c7b0088728d3","turnId":"t2","diff":""}}"#;
+    feed_line(&mut a, &key, line, 7);
+    assert!(
+        overlay_text(&mut a)
+            .iter()
+            .any(|l| l.contains("the last turn changed nothing"))
+    );
+}
+
+#[test]
 fn the_wizard_offers_the_models_a_session_reported() {
     use chameleon_app::overlay::Overlay;
     let mut a = app();

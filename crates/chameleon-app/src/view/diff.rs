@@ -174,12 +174,8 @@ pub fn build(app: &App, view: &DiffView, area: Rect) -> OverlayView {
     let theme = &app.theme;
     let muted = Style::new().fg(theme.muted);
     let (list_w, body_w, rows) = layout(area.w, area.h + 1);
-    let session = app
-        .slots
-        .iter()
-        .find(|s| s.key == view.key)
-        .and_then(|s| s.session.as_ref());
-    let files = view.files(session);
+    let slot = app.slots.iter().find(|s| s.key == view.key);
+    let files = view.files(slot);
     let file = files.get(view.file);
 
     // Which source, as tabs.
@@ -197,11 +193,17 @@ pub fn build(app: &App, view: &DiffView, area: Rect) -> OverlayView {
         }
     };
     let git = if view.worktree { "worktree" } else { "git" };
-    let tabs = Line::new(vec![
+    let mut tabs = Line::new(vec![
         tab(git, view.source == DiffSource::Git),
         Span::raw(" "),
         tab("session", view.source == DiffSource::Session),
     ]);
+    // Only harnesses that diff their turns (Codex) have this one.
+    let has_turn = slot.is_some_and(|s| s.turn_diff.is_some());
+    if has_turn {
+        tabs.push(Span::raw(" "));
+        tabs.push(tab("turn", view.source == DiffSource::Turn));
+    }
 
     // The diff's own rows: a header, a rule, then the window of the body.
     let mut right: Vec<Line> = Vec::new();
@@ -258,8 +260,16 @@ pub fn build(app: &App, view: &DiffView, area: Rect) -> OverlayView {
             right.extend(empty(msg, "s  this session's edits · r  reload"));
         }
         (DiffSource::Session, _, None) => {
+            let next = if has_turn {
+                "s  the last turn's changes"
+            } else {
+                "s  the repository's changes"
+            };
+            right.extend(empty("no edits in this session yet", next));
+        }
+        (DiffSource::Turn, _, None) => {
             right.extend(empty(
-                "no edits in this session yet",
+                "the last turn changed nothing",
                 "s  the repository's changes",
             ));
         }

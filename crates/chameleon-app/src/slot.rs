@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use acc_core::detached::Status;
 use acc_core::event::{ItemId, Panel, Plan};
+use acc_core::item::FileDiff;
 use acc_core::session::{Session, SessionSpec};
 use acc_core::state::{BlockKind, RunState};
 
@@ -132,6 +133,9 @@ pub struct Slot {
     pub panels: HashMap<String, Panel>,
     /// The agent's latest to-do list for the main conversation.
     pub plan: Option<Plan>,
+    /// What the latest turn changed, as the harness diffed it (Codex's
+    /// `Event::TurnDiff`; shell commands' changes included).
+    pub turn_diff: Option<Vec<FileDiff>>,
 }
 
 impl Slot {
@@ -159,6 +163,7 @@ impl Slot {
             log_size: None,
             panels: HashMap::new(),
             plan: None,
+            turn_diff: None,
         }
     }
 
