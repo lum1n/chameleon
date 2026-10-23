@@ -7,7 +7,7 @@
 //! the prompt. Panes have no borders; the panes without focus fade.
 //!
 //! ```text
-//!  ◆ chameleon  fix the tests  ~/proj · Claude Code · opus        ⚠1 ⠋1 ·2
+//!   chameleon  fix the tests  ~/proj · Claude Code · opus        ⚠1 ⠋1 ·2
 //! ─────────────────┬─────────────────────────────────────────────────────────
 //! ▌1 ⚠ fix the te… │ ▎fix the failing tests
 //!  2 ⠋ bump deps   │
@@ -164,7 +164,8 @@ impl App {
         let show_sidebar = self.sidebar_shown && (w >= SIDEBAR_MIN_COLS || self.focus == Pane::Sidebar);
         // The sidebar's last column carries the vertical rule.
         let sidebar_w = if show_sidebar {
-            self.cfg.general.sidebar_width.clamp(20, w / 2).min(w)
+            // max/min, not clamp: under 40 columns w / 2 < 20, and clamp panics.
+            self.cfg.general.sidebar_width.max(20).min(w / 2)
         } else {
             0
         };

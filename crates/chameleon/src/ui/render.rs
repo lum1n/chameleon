@@ -314,7 +314,7 @@ mod tests {
         let rows = paint(&mut a, w, h);
         println!("{}", rows.join("\n"));
         let sb = 34usize; // the default sidebar width; its last column is the rule
-        assert!(rows[0].starts_with(" ◆ chameleon "), "{:?}", rows[0]);
+        assert!(rows[0].starts_with(" \u{f314} chameleon "), "{:?}", rows[0]);
         assert_eq!(rows[1].chars().nth(sb - 1), Some('┬'));
         assert!(
             rows[2..]

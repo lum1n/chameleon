@@ -1773,3 +1773,19 @@ fn the_agents_plan_is_pinned_under_the_transcript_until_it_is_done() {
     feed_line(&mut a, &key, &todos(["completed", "completed", "completed"]), 4);
     assert!(a.screen().plan.is_none(), "a finished plan goes away");
 }
+
+#[test]
+fn a_narrow_terminal_with_the_sidebar_focused_draws() {
+    let mut a = app();
+    for width in [0, 1, 10, 39, 40, 49] {
+        a.handle(AppEvent::Resize { width, height: 5 }, 0);
+        let _ = a.screen();
+    }
+}
+
+#[test]
+fn the_header_falls_back_to_an_emoji_without_a_nerd_font() {
+    assert!(app().screen().header.text().starts_with(" \u{f314} chameleon "));
+    let mut a = App::new(Config::parse("[general]\nnerd_font = false").unwrap(), "test");
+    assert!(a.screen().header.text().starts_with(" 🦎 chameleon "));
+}
