@@ -30,6 +30,10 @@ pub struct Config {
     /// done, an error, the exit) on the host of every session started
     /// here, even while chameleon is closed, and run a hook for each.
     pub watch: Option<WatchConfig>,
+    /// Sandbox new sessions by default (`[sandbox]`: `preset` is
+    /// `workspace` or `read_only`, plus `write`, `hide` and
+    /// `show_credentials`); the launch wizard can still turn it off.
+    pub sandbox: Option<acc_core::sandbox::Sandbox>,
     /// Themes from `themes/*.json` next to the config, loaded by the binary.
     #[serde(skip)]
     pub custom_themes: Vec<crate::themes::ThemeDef>,

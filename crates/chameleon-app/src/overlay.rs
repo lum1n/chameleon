@@ -6,6 +6,7 @@ use acc_core::command::{Choice, Command, CommandEntry, CommandInput, Exec, Optio
 use acc_core::event::{Panel, PanelAction, PermissionOption};
 use acc_core::item::ItemDetail;
 use acc_core::policy::Decision;
+use acc_core::sandbox::{Preset, Sandbox};
 use acc_core::session::{LaunchRequest, Permission, new_session_id};
 use acc_core::state::BlockKind;
 
@@ -34,6 +35,9 @@ pub struct Wizard {
     pub field: usize,
     /// Start the session in a git worktree of its own.
     pub worktree: bool,
+    /// Confine the harness, and how much of the workspace it may change;
+    /// `None` runs it unconfined.
+    pub sandbox: Option<Preset>,
     pub busy: bool,
     pub error: Option<String>,
     pub resume: Option<String>,
@@ -51,10 +55,14 @@ impl Wizard {
     pub const HARNESS: usize = 1;
     pub const DIR: usize = 2;
     pub const WORKTREE: usize = 3;
-    pub const MODEL: usize = 4;
-    pub const PERMISSION: usize = 5;
-    pub const PROMPT: usize = 6;
-    pub const FIELDS: usize = 7;
+    pub const SANDBOX: usize = 4;
+    pub const MODEL: usize = 5;
+    pub const PERMISSION: usize = 6;
+    pub const PROMPT: usize = 7;
+    pub const FIELDS: usize = 8;
+
+    /// The sandbox choices, in the order the row shows them.
+    pub const SANDBOXES: [Option<Preset>; 3] = [None, Some(Preset::Workspace), Some(Preset::ReadOnly)];
 
     /// The index into `fields` of the row with focus, when it takes text.
     pub fn text_field(&self) -> Option<usize> {
@@ -381,6 +389,7 @@ impl Overlay {
             fields: [cwd, String::new(), String::new(), String::new()],
             field: Wizard::DIR,
             worktree: false,
+            sandbox: app.cfg.sandbox.as_ref().map(|s| s.preset),
             busy: false,
             error: None,
             resume: None,
@@ -808,6 +817,16 @@ impl App {
                             if w.field == Wizard::WORKTREE =>
                         {
                             w.worktree = !w.worktree
+                        }
+                        KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if w.field == Wizard::SANDBOX => {
+                            let all = Wizard::SANDBOXES;
+                            let i = all.iter().position(|p| *p == w.sandbox).unwrap_or(0);
+                            let j = if key.code == KeyCode::Left {
+                                i + all.len() - 1
+                            } else {
+                                i + 1
+                            };
+                            w.sandbox = all[j % all.len()];
                         }
                         KeyCode::Left | KeyCode::Right if w.field == Wizard::MODEL => {
                             let models = self.wizard_models(w.host, w.harness);
@@ -1323,7 +1342,7 @@ impl App {
                     self.overlay = Some(Overlay::Launch(w));
                     return vec![self.run(host, exec, ExecTag::AddWorktree(id))];
                 }
-                let req = wizard_request(&w, cwd, None);
+                let req = wizard_request(&w, cwd, None, self.cfg.sandbox.as_ref());
                 self.focus = crate::model::Pane::Composer;
                 self.launch(host, req)
             }
@@ -1348,7 +1367,7 @@ impl App {
         w.busy = false;
         match outcome.map(|o| o.stdout_text().trim().to_owned()) {
             Ok(cwd) if !cwd.is_empty() => {
-                let req = wizard_request(&w, cwd, Some(id.to_owned()));
+                let req = wizard_request(&w, cwd, Some(id.to_owned()), self.cfg.sandbox.as_ref());
                 self.focus = crate::model::Pane::Composer;
                 self.launch_as(host, req, id.to_owned())
             }
@@ -1377,8 +1396,14 @@ impl App {
     }
 }
 
-/// What the wizard starts, in `cwd` (resolved on the host).
-fn wizard_request(w: &Wizard, cwd: String, worktree: Option<String>) -> LaunchRequest {
+/// What the wizard starts, in `cwd` (resolved on the host). A sandbox
+/// takes its extra paths from the config's `[sandbox]`.
+fn wizard_request(
+    w: &Wizard,
+    cwd: String,
+    worktree: Option<String>,
+    configured: Option<&Sandbox>,
+) -> LaunchRequest {
     let opt = |s: &String| Some(s.trim().to_owned()).filter(|s| !s.is_empty());
     LaunchRequest {
         harness: Some(w.harness),
@@ -1388,6 +1413,10 @@ fn wizard_request(w: &Wizard, cwd: String, worktree: Option<String>) -> LaunchRe
         resume: w.resume.clone(),
         prompt: opt(&w.fields[3]),
         worktree,
+        sandbox: w.sandbox.map(|preset| Sandbox {
+            preset,
+            ..configured.cloned().unwrap_or_default()
+        }),
         ..LaunchRequest::default()
     }
 }

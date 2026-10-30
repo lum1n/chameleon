@@ -52,6 +52,19 @@ pub fn build(app: &App, w: usize) -> Line {
             if let Some(m) = &slot.spec.model {
                 detail.push_str(&format!(" · {m}"));
             }
+            if slot.spec.sandbox.is_some() {
+                // Asked for, but a host that can't sandbox runs it anyway.
+                let unconfined = slot
+                    .session
+                    .as_ref()
+                    .and_then(|s| s.sandbox())
+                    .is_some_and(|a| matches!(a, acc_core::sandbox::Applied::None { .. }));
+                detail.push_str(if unconfined {
+                    " · unconfined"
+                } else {
+                    " · sandboxed"
+                });
+            }
             let title = truncate(&slot.title(), room.saturating_sub(4).min(40));
             line.push(Span::new("› ", muted));
             line.push(Span::new(title.clone(), Style::new().bold()));

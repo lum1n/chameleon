@@ -28,6 +28,8 @@ pub struct HostState {
     pub feed: FeedStatus,
     pub harnesses: Vec<Availability>,
     pub probed: bool,
+    /// What a sandboxed session would get on the host, once checked.
+    pub sandbox: Option<acc_core::sandbox::Support>,
     pub listed_at_ms: Option<u64>,
     pub listing: bool,
     pub error: Option<String>,
@@ -151,6 +153,7 @@ impl App {
                 feed: FeedStatus::Unknown,
                 harnesses: Vec::new(),
                 probed: false,
+                sandbox: None,
                 listed_at_ms: None,
                 listing: false,
                 error: None,
@@ -267,6 +270,11 @@ impl App {
                 &self.hosts[i].cfg.name.clone(),
                 acc_core::Exec::new(acc_core::harness::probe_script()),
                 ExecTag::Probe,
+            ));
+            out.push(self.run(
+                &self.hosts[i].cfg.name.clone(),
+                acc_core::Exec::new(acc_core::sandbox::probe_script()),
+                ExecTag::SandboxProbe,
             ));
         }
         out
@@ -676,6 +684,14 @@ impl App {
                             &host,
                             acc_core::Exec::new(acc_core::harness::probe_script()),
                             ExecTag::Probe,
+                        ));
+                    }
+                    if self.hosts[i].sandbox.is_none() {
+                        let host = self.hosts[i].cfg.name.clone();
+                        out.push(self.run(
+                            &host,
+                            acc_core::Exec::new(acc_core::sandbox::probe_script()),
+                            ExecTag::SandboxProbe,
                         ));
                     }
                 }

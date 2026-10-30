@@ -1,5 +1,6 @@
 //! Rendering of the modal overlays.
 
+use acc_core::sandbox::{Applied, Preset};
 use acc_core::state::BlockKind;
 
 use crate::keymap::Action;
@@ -1181,6 +1182,35 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
                     ("its own, on a new branch".to_owned(), w.worktree),
                 ],
             ));
+            lines.extend(choices(
+                Wizard::SANDBOX,
+                "sandbox",
+                Wizard::SANDBOXES
+                    .iter()
+                    .map(|p| {
+                        let name = match p {
+                            None => "off",
+                            Some(Preset::Workspace) => "writes the workspace",
+                            Some(Preset::ReadOnly) => "read only",
+                        };
+                        (name.to_owned(), *p == w.sandbox)
+                    })
+                    .collect(),
+            ));
+            // What the host would do with it: said before the launch, not after.
+            if w.sandbox.is_some() {
+                let support = app.hosts.get(w.host).and_then(|h| h.sandbox.as_ref());
+                let (text, style) = match support.map(|s| &s.applied) {
+                    Some(Applied::Seatbelt) => ("Seatbelt; credentials hidden".to_owned(), muted),
+                    Some(Applied::Bwrap) => ("bubblewrap; credentials hidden".to_owned(), muted),
+                    Some(Applied::None { reason }) => (
+                        format!("can't sandbox here, runs unconfined: {reason}"),
+                        Style::new().fg(theme.permission),
+                    ),
+                    None => ("not checked on the host yet".to_owned(), muted.italic()),
+                };
+                lines.push(note(&truncate(&text, value_w), style));
+            }
         }
         if field == Wizard::MODEL && focused && !models.is_empty() {
             // Long lists show a window around the pick.
@@ -1275,11 +1305,12 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
         } else {
             ""
         };
+        let sandbox = if w.sandbox.is_some() { ", sandboxed" } else { "" };
         Line::new(vec![
             Span::new("⏵ ", accent),
             Span::new(
                 format!(
-                    "starts {} on {host}{worktree}, detached; it keeps running if chameleon quits",
+                    "starts {} on {host}{worktree}{sandbox}, detached; it keeps running if chameleon quits",
                     w.harness.display_name()
                 ),
                 muted,

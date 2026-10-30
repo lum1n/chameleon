@@ -22,6 +22,8 @@ pub enum ExecTag {
     Recheck(String),
     List,
     Probe,
+    /// Checking whether the host can sandbox a session.
+    SandboxProbe,
     /// Resolving the working directory typed into the launch wizard.
     ResolveDir,
     /// Making the git worktree a wizard launch starts in, named after the

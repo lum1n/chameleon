@@ -46,7 +46,7 @@ Rust 1.88 or newer. The optional Lua runtime needs `--features lua`.
 
 | Key | Does |
 |---|---|
-| `n` / `ctrl-n` | start a session: host, harness, directory, worktree, model, permission, first prompt. The directory completes from the host: `tab` completes, `↓` `↑` pick, `enter` takes. With a worktree, the session works in a git worktree of its own (`~/.acc/w/<id>`, branch `acc/<id>`), so several agents can share a repository. A harness older than acc was tested with is flagged |
+| `n` / `ctrl-n` | start a session: host, harness, directory, worktree, sandbox, model, permission, first prompt. The directory completes from the host: `tab` completes, `↓` `↑` pick, `enter` takes. With a worktree, the session works in a git worktree of its own (`~/.acc/w/<id>`, branch `acc/<id>`), so several agents can share a repository. With a sandbox, acc confines the harness (bubblewrap on Linux, Seatbelt on macOS, chosen on the host): it writes only the directory and its repository (or nothing there, read only), temporary directories, caches and its own state, and can't read `~/.ssh` keys, `~/.aws` and other credentials. The wizard says beforehand what the host can do; one that can't still runs the harness, unconfined, and the header says so. A harness older than acc was tested with is flagged |
 | `j` `k` `1`-`0` | pick a session; in the transcript, move between items |
 | `ctrl-j` `ctrl-k` / `ctrl-h` `ctrl-l` | in every list, picker and form (the palette and launcher too): down / up and change a choice, even while typing. Plain `hjkl` and `g` `G` where nothing is typed |
 | `b` / `ctrl-b` | show or hide the session list (`h` brings it back too) |
@@ -135,6 +135,12 @@ path = "**/.env"       # files the tool acts on, relative to the session's direc
 [watch]                # on the host of every session started here, even with chameleon
 url = "https://ntfy.sh/my-topic"  # closed: post each approval waiting, turn done, error
 # command = "..."      # and exit, or run a command there (event JSON on stdin)
+
+[sandbox]              # sandbox new sessions by default (the wizard can turn it off)
+preset = "workspace"   # or "read_only": the directory isn't writable either
+write = ["~/scratch"]  # more writable paths
+hide = ["~/secrets"]   # more unreadable paths
+# show_credentials = true
 ```
 
 The policy answers for every session chameleon attaches to, and says so in a toast. Set it in

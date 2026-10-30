@@ -257,6 +257,16 @@ impl App {
                 }
                 Vec::new()
             }
+            ExecTag::SandboxProbe => {
+                // Only the wizard's note needs it; a failure leaves it unknown.
+                let support = outcome
+                    .ok()
+                    .and_then(|o| acc_core::sandbox::parse_probe(&o.stdout_text()));
+                if let Some(h) = self.host_mut(host) {
+                    h.sandbox = support;
+                }
+                Vec::new()
+            }
             ExecTag::ResolveDir => self.on_resolve_dir(host, outcome),
             ExecTag::AddWorktree(id) => self.on_add_worktree(host, &id, outcome),
             ExecTag::ListDirs(parent) => {
@@ -370,13 +380,20 @@ impl App {
         };
         match outcome {
             Ok(o) => {
-                let pid = o.stdout_text().trim().to_owned();
+                // The PID, then for a sandboxed session what the host applied.
+                let stdout = o.stdout_text();
+                let pid = stdout.lines().next().unwrap_or("").trim().to_owned();
                 self.slots[i].phase = Phase::Live;
                 self.slots[i].status = Some(Status::Alive {
                     pid: pid.parse().unwrap_or(0),
                     size: 0,
                 });
+                let updates = match self.slots[i].session.as_mut() {
+                    Some(s) => s.on_launched(&stdout),
+                    None => Vec::new(),
+                };
                 let mut out = Self::follow_effects(&key, 0);
+                out.extend(self.process_updates(i, updates));
                 out.extend(self.flush(i));
                 out.extend(self.watch(i));
                 if let Some(parent) = self.slots[i].kill_after_launch.take() {

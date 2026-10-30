@@ -450,6 +450,21 @@ mod tests {
             "{}",
             rows.join("\n")
         );
+        // A sandbox is a choice too, with what the host would do with it.
+        key(&mut a, Key::new(KeyCode::Down));
+        key(&mut a, Key::char('l'));
+        let rows = plain(paint(&mut a, w, h));
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("sandbox") && r.contains("writes the workspace")),
+            "{}",
+            rows.join("\n")
+        );
+        assert!(
+            rows.iter().any(|r| r.contains("sandboxed, detached")),
+            "{}",
+            rows.join("\n")
+        );
         // On the permission field, Claude's modes are choices.
         key(&mut a, Key::new(KeyCode::Down));
         key(&mut a, Key::new(KeyCode::Down));

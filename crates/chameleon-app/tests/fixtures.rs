@@ -70,6 +70,7 @@ fn launch(a: &mut App, harness: Harness, prompt: &str) -> (SessionKey, Vec<Effec
         a.handle(ch(c), 1);
     }
     a.handle(press(KeyCode::Down), 1); // worktree
+    a.handle(press(KeyCode::Down), 1); // sandbox
     a.handle(press(KeyCode::Down), 1); // model
     a.handle(press(KeyCode::Down), 1); // permission
     a.handle(press(KeyCode::Down), 1); // prompt
@@ -1191,6 +1192,7 @@ fn the_wizard_offers_the_models_a_session_reported() {
     assert!(models.len() > 1, "{models:?}");
     a.handle(ctrl('n'), 5);
     a.handle(press(KeyCode::Down), 5); // worktree
+    a.handle(press(KeyCode::Down), 5); // sandbox
     a.handle(press(KeyCode::Down), 5); // model
     a.handle(press(KeyCode::Right), 5);
     a.handle(press(KeyCode::Right), 5);
@@ -1207,6 +1209,7 @@ fn the_wizard_offers_the_models_a_session_reported() {
     assert!(text.contains("ctrl-h/l") && text.contains(&models[0]), "{text}");
 
     // Another harness has no models here, so the pick is dropped.
+    a.handle(press(KeyCode::Up), 5); // sandbox
     a.handle(press(KeyCode::Up), 5); // worktree
     a.handle(press(KeyCode::Up), 5); // directory
     a.handle(press(KeyCode::Up), 5); // harness
@@ -1788,4 +1791,69 @@ fn the_header_falls_back_to_an_emoji_and_the_name_without_a_nerd_font() {
     assert!(app().screen().header.text().starts_with(" \u{f314} no session"));
     let mut a = App::new(Config::parse("[general]\nnerd_font = false").unwrap(), "test");
     assert!(a.screen().header.text().starts_with(" 🦎 chameleon "));
+}
+
+#[test]
+fn a_sandboxed_launch_says_what_the_host_did_with_it() {
+    use acc_core::sandbox::Preset;
+    use chameleon_app::overlay::{Overlay, Wizard};
+    // `[sandbox]` turns it on for new sessions, with its extra paths.
+    let mut a = app_with("[sandbox]\nwrite = [\"~/scratch\"]\n");
+    a.handle(ctrl('n'), 1);
+    let Some(Overlay::Launch(w)) = a.overlay() else {
+        panic!("expected the wizard");
+    };
+    assert_eq!(w.sandbox, Some(Preset::Workspace));
+    // From the directory: worktree, then sandbox; `l` makes it read only.
+    a.handle(press(KeyCode::Down), 1);
+    a.handle(press(KeyCode::Down), 1);
+    a.handle(ch('l'), 1);
+    let Some(Overlay::Launch(w)) = a.overlay() else {
+        panic!("expected the wizard");
+    };
+    assert_eq!((w.field, w.sandbox), (Wizard::SANDBOX, Some(Preset::ReadOnly)));
+    let fx = a.handle(AppEvent::Key(Key::ctrl(KeyCode::Enter)), 2);
+    let (host, _) = ran(&fx, |t| *t == ExecTag::ResolveDir).expect("resolves the directory");
+    let fx = a.handle(
+        AppEvent::ExecDone {
+            host: host.clone(),
+            tag: ExecTag::ResolveDir,
+            result: ok("/work\n"),
+        },
+        3,
+    );
+    let id = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::Run {
+                tag: ExecTag::Launch(id),
+                ..
+            } => Some(id.clone()),
+            _ => None,
+        })
+        .expect("launches");
+    let key = SessionKey::new(&host, &id);
+    let slot = a.slots().iter().find(|s| s.key == key).unwrap();
+    let sandbox = slot.spec.sandbox.as_ref().expect("asks for a sandbox");
+    assert_eq!(sandbox.preset, Preset::ReadOnly);
+    assert_eq!(sandbox.write, vec!["~/scratch".to_owned()]);
+
+    // The host couldn't: the PID is still read, and a notice says so.
+    a.handle(
+        AppEvent::ExecDone {
+            host: host.clone(),
+            tag: ExecTag::Launch(id.clone()),
+            result: ok("4242\nB none bwrap not found\n"),
+        },
+        4,
+    );
+    let slot = a.slots().iter().find(|s| s.key == key).unwrap();
+    assert!(matches!(
+        slot.status,
+        Some(acc_core::detached::Status::Alive { pid: 4242, .. })
+    ));
+    let toasts: Vec<String> = a.screen().toasts.iter().map(|l| l.text()).collect();
+    assert!(toasts.iter().any(|t| t.contains("unconfined")), "{toasts:?}");
+    let header = a.screen().header.text();
+    assert!(header.contains("unconfined"), "{header}");
 }
