@@ -371,6 +371,16 @@ impl App {
                 self.on_git_diff(&SessionKey::new(host, &id), outcome);
                 Vec::new()
             }
+            ExecTag::Branch(id) => {
+                if let Some(s) = self.slot_mut(&SessionKey::new(host, &id)) {
+                    // Outside a repository, or the host unreachable: no branch.
+                    s.branch = outcome
+                        .ok()
+                        .map(|o| o.stdout_text().trim().to_owned())
+                        .filter(|b| !b.is_empty());
+                }
+                Vec::new()
+            }
         }
     }
 

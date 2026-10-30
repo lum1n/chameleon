@@ -43,6 +43,8 @@ pub enum ExecTag {
     Merge(String),
     /// Deleting a session's worktree.
     Discard(String),
+    /// The branch checked out in a session's directory, by session.
+    Branch(String),
     /// Skills and MCP servers on the host.
     Loadout(crate::loadout::LoadoutTag),
 }

@@ -138,6 +138,11 @@ pub struct Slot {
     pub turn_diff: Option<Vec<FileDiff>>,
     /// Requests auto-approval has answered or left to you, by request id.
     pub auto_seen: HashSet<String>,
+    /// The branch checked out in the session's directory, when it is in a
+    /// git repository; asked for while the session is selected.
+    pub branch: Option<String>,
+    /// When the branch was last asked for.
+    pub branch_asked_ms: Option<u64>,
 }
 
 impl Slot {
@@ -167,6 +172,8 @@ impl Slot {
             plan: None,
             turn_diff: None,
             auto_seen: HashSet::new(),
+            branch: None,
+            branch_asked_ms: None,
         }
     }
 

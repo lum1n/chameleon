@@ -49,7 +49,10 @@ pub fn build(app: &App, w: usize) -> Line {
                 .max(8);
             let place = match &slot.spec.worktree {
                 Some(name) => format!("⎇ {}", acc_core::worktree::branch(name)),
-                None => slot.spec.cwd.clone(),
+                None => match &slot.branch {
+                    Some(b) => format!("{} ⎇ {b}", slot.spec.cwd),
+                    None => slot.spec.cwd.clone(),
+                },
             };
             let mut detail = format!("{place} · {}", slot.harness().display_name());
             if let Some(m) = &slot.spec.model {

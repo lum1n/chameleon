@@ -653,6 +653,43 @@ fn the_header_shows_a_sandbox_the_spec_has_lost() {
 }
 
 #[test]
+fn the_header_shows_the_branch_of_the_selected_session() {
+    let mut a = app();
+    let id = "claude-abcdefghijklmnopqrstuvwx";
+    let spec = format!(
+        "{{\"v\":1,\"id\":\"{id}\",\"harness\":\"claude\",\"cwd\":\"/w\",\
+         \"launch\":{{\"program\":\"claude\",\"args\":[],\"env\":[],\
+         \"protocol\":\"claude_stream_json\"}},\"created_ms\":1}}"
+    );
+    a.handle(
+        AppEvent::ExecDone {
+            host: "local".into(),
+            tag: ExecTag::List,
+            result: ok(&format!("S\t{id}\talive 1 0\t1700000000\nJ\t{spec}\n")),
+        },
+        3,
+    );
+    let asks = |fx: &[Effect]| {
+        fx.iter()
+            .filter(|e| matches!(e, Effect::Run { tag: ExecTag::Branch(i), .. } if i == id))
+            .count()
+    };
+    assert_eq!(asks(&a.handle(AppEvent::Tick, 4)), 1, "asks once selected");
+    assert_eq!(asks(&a.handle(AppEvent::Tick, 5)), 0, "not again right away");
+    a.handle(
+        AppEvent::ExecDone {
+            host: "local".into(),
+            tag: ExecTag::Branch(id.into()),
+            result: ok("main\n"),
+        },
+        6,
+    );
+    let header = a.screen().header.text();
+    assert!(header.contains("/w ⎇ main"), "{header}");
+    assert_eq!(asks(&a.handle(AppEvent::Tick, 60_000)), 1, "asks again later");
+}
+
+#[test]
 fn codex_quota_shows_in_the_status_bar() {
     let mut a = app();
     let (key, _) = launch(&mut a, Harness::Codex, "go");

@@ -452,6 +452,7 @@ impl App {
                 ));
             }
         }
+        out.extend(self.ask_branch(refresh_ms));
         for s in &mut self.slots {
             if let Some(at) = s.unfollow_at_ms
                 && now >= at
@@ -475,6 +476,26 @@ impl App {
                 .iter()
                 .any(|s| s.phase != Phase::Listed && s.is_alive());
         out
+    }
+
+    /// Asks for the branch in the selected session's directory, for the
+    /// header, when it hasn't been asked for in a while. A worktree's
+    /// branch is known from its name.
+    fn ask_branch(&mut self, refresh_ms: u64) -> Vec<Effect> {
+        let now = self.now_ms;
+        let Some(s) = self.selected_slot_mut() else {
+            return Vec::new();
+        };
+        if s.spec.worktree.is_some()
+            || s.branch_asked_ms
+                .is_some_and(|t| now.saturating_sub(t) < refresh_ms)
+        {
+            return Vec::new();
+        }
+        s.branch_asked_ms = Some(now);
+        let (host, id) = (s.key.host.clone(), s.key.id.clone());
+        let exec = acc_core::Exec::new(branch_script(&s.spec.cwd));
+        vec![self.run(&host, exec, ExecTag::Branch(id))]
     }
 
     fn on_mouse(&mut self, x: u16, y: u16, kind: MouseKind) -> Vec<Effect> {
@@ -1124,4 +1145,15 @@ impl App {
             },
         )
     }
+}
+
+/// Prints the branch checked out in `cwd`, or the commit when detached;
+/// nothing outside a git repository.
+fn branch_script(cwd: &str) -> String {
+    format!(
+        "cd {dir} 2>/dev/null || exit 0\n\
+         git symbolic-ref -q --short HEAD 2>/dev/null || git rev-parse -q --short HEAD 2>/dev/null\n\
+         exit 0\n",
+        dir = acc_core::shell::quote(cwd),
+    )
 }
