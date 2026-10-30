@@ -47,7 +47,7 @@ fn style(s: Style) -> RStyle {
     if s.italic {
         m |= Modifier::ITALIC;
     }
-    if s.underline {
+    if s.underline || s.link != 0 {
         m |= Modifier::UNDERLINED;
     }
     if s.reversed {

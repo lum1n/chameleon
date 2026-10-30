@@ -1,6 +1,7 @@
 //! Width-aware line wrapping and a per-item cache of wrapped lines.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use unicode_width::UnicodeWidthStr;
 
@@ -133,19 +134,23 @@ pub fn wrap_hang(line: &Line, max: usize, hang: &Line) -> Vec<Line> {
             *cur_w += cw(c);
         }
     };
-    for span in &line.spans {
-        for c in span.text.chars() {
-            match c {
-                '\n' => {
-                    flush(&mut word, &mut out, &mut cur, &mut cur_w);
-                    push_cur(&mut out, &mut cur, &mut cur_w);
-                }
-                ' ' => {
-                    word.push((' ', span.style));
-                    flush(&mut word, &mut out, &mut cur, &mut cur_w);
-                }
-                c => word.push((c, span.style)),
+    let mut chars: Vec<(char, Style)> = line
+        .spans
+        .iter()
+        .flat_map(|span| span.text.chars().map(|c| (c, span.style)))
+        .collect();
+    mark_links(&mut chars);
+    for (c, style) in chars {
+        match c {
+            '\n' => {
+                flush(&mut word, &mut out, &mut cur, &mut cur_w);
+                push_cur(&mut out, &mut cur, &mut cur_w);
             }
+            ' ' => {
+                word.push((' ', style));
+                flush(&mut word, &mut out, &mut cur, &mut cur_w);
+            }
+            c => word.push((c, style)),
         }
     }
     flush(&mut word, &mut out, &mut cur, &mut cur_w);
@@ -154,6 +159,63 @@ pub fn wrap_hang(line: &Line, max: usize, hang: &Line) -> Vec<Line> {
         out.push(cur);
     }
     out
+}
+
+/// Ids for links, unique for the run so two URLs never join up.
+static NEXT_LINK: AtomicU32 = AtomicU32::new(1);
+
+/// Marks the characters of every `http://` and `https://` URL in `chars`
+/// as one link. Trailing punctuation, and a closing bracket the URL didn't
+/// open, belong to the sentence around it.
+fn mark_links(chars: &mut [(char, Style)]) {
+    let mut i = 0;
+    while i < chars.len() {
+        let starts = |p: &str| {
+            p.chars()
+                .enumerate()
+                .all(|(k, c)| chars.get(i + k).is_some_and(|x| x.0 == c))
+        };
+        let boundary = i == 0 || !chars[i - 1].0.is_alphanumeric();
+        let scheme = if starts("https://") {
+            8
+        } else if starts("http://") {
+            7
+        } else {
+            0
+        };
+        if !boundary || scheme == 0 {
+            i += 1;
+            continue;
+        }
+        let mut end = i;
+        while end < chars.len() && !chars[end].0.is_whitespace() && !"<>\"'`".contains(chars[end].0) {
+            end += 1;
+        }
+        while end > i {
+            let last = chars[end - 1].0;
+            let opens = |o: char| chars[i..end].iter().filter(|x| x.0 == o).count();
+            let unbalanced = match last {
+                ')' => opens('(') < opens(')'),
+                ']' => opens('[') < opens(']'),
+                _ => false,
+            };
+            if ".,;:!?".contains(last) || unbalanced {
+                end -= 1;
+            } else {
+                break;
+            }
+        }
+        // Just the scheme isn't a link.
+        if end > i + scheme {
+            let id = NEXT_LINK.fetch_add(1, Ordering::Relaxed);
+            for (_, style) in &mut chars[i..end] {
+                if style.link == 0 {
+                    style.link = id;
+                }
+            }
+        }
+        i = end.max(i + 1);
+    }
 }
 
 /// Appends to the last span when it has the same style.

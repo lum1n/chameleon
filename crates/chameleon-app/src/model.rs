@@ -77,6 +77,8 @@ pub struct App {
     pub(crate) problems: Vec<String>,
     /// Where the last frame put things, for mouse clicks.
     pub(crate) layout: Layout,
+    /// Text being (or last) selected with the mouse in the transcript.
+    pub(crate) selection: Option<crate::select::Selection>,
     /// What each session spent, by session id (see [`crate::usage`]).
     pub(crate) usage: std::collections::BTreeMap<String, acc_core::usage::UsageRecord>,
     pub(crate) usage_dirty: bool,
@@ -90,6 +92,8 @@ pub struct Layout {
     pub sidebar: Option<Rect>,
     pub sidebar_hits: Vec<Option<SessionKey>>,
     pub transcript: Rect,
+    /// The transcript's rows as drawn, for selections and links.
+    pub transcript_lines: Vec<Line>,
     pub composer: Rect,
 }
 
@@ -183,6 +187,7 @@ impl App {
             now_ms: 0,
             problems,
             layout: Layout::default(),
+            selection: None,
             usage: Default::default(),
             usage_dirty: false,
             usage_saved_ms: 0,
@@ -480,14 +485,36 @@ impl App {
                 }
                 MouseKind::ScrollUp => self.select_move(false),
                 MouseKind::ScrollDown => self.select_move(true),
+                MouseKind::Drag | MouseKind::Release => {}
             }
             return Vec::new();
         }
-        if inside(self.layout.transcript) {
+        // A drag keeps selecting past the transcript's edges, clamped to them.
+        let t = self.layout.transcript;
+        let cell = (
+            x.clamp(t.x, (t.x + t.w).saturating_sub(1)) - t.x,
+            y.clamp(t.y, (t.y + t.h).saturating_sub(1)) - t.y,
+        );
+        match kind {
+            MouseKind::Drag => {
+                if let Some(sel) = &mut self.selection {
+                    sel.dragged |= sel.head != cell;
+                    sel.head = cell;
+                }
+                return Vec::new();
+            }
+            MouseKind::Release => return self.on_release(),
+            _ => {}
+        }
+        if inside(t) {
             match kind {
-                MouseKind::Click => self.focus = Pane::Transcript,
+                MouseKind::Click => {
+                    self.focus = Pane::Transcript;
+                    self.selection = Some(crate::select::Selection::at(cell));
+                }
                 MouseKind::ScrollUp => self.scroll_lines(-3),
                 MouseKind::ScrollDown => self.scroll_lines(3),
+                MouseKind::Drag | MouseKind::Release => {}
             }
         } else if inside(self.layout.composer) && kind == MouseKind::Click {
             self.focus = Pane::Composer;
@@ -495,9 +522,45 @@ impl App {
         Vec::new()
     }
 
+    /// The button came up over the transcript: a drag copies what it
+    /// covered, a click opens the link under it.
+    fn on_release(&mut self) -> Vec<Effect> {
+        let Some(sel) = self.selection else {
+            return Vec::new();
+        };
+        let lines = &self.layout.transcript_lines;
+        if !sel.dragged {
+            self.selection = None;
+            return match crate::select::link_at(lines, sel.anchor) {
+                Some(url) => {
+                    self.toast(format!("opening {}", crate::wrap::truncate(&url, 60)), false);
+                    vec![Effect::Open { url }]
+                }
+                None => Vec::new(),
+            };
+        }
+        let text = crate::select::text(lines, &sel);
+        if text.is_empty() {
+            self.selection = None;
+            return Vec::new();
+        }
+        let rows = text.lines().count();
+        self.toast(
+            if rows > 1 {
+                format!("copied {rows} lines")
+            } else {
+                format!("copied {} characters", text.chars().count())
+            },
+            false,
+        );
+        vec![Effect::Copy { text }]
+    }
+
     // ---- keys ----------------------------------------------------------------
 
     fn on_key(&mut self, key: Key) -> Vec<Effect> {
+        // The rows under a selection move with any key; it's done.
+        self.selection = None;
         if self.overlay.is_some() {
             return self.overlay_key(key);
         }
@@ -827,6 +890,7 @@ impl App {
     }
 
     pub(crate) fn select(&mut self, key: SessionKey) {
+        self.selection = None;
         self.selected = Some(key.clone());
         if let Some(s) = self.slot_mut(&key) {
             s.attention = false;
@@ -895,6 +959,7 @@ impl App {
     }
 
     fn scroll_lines(&mut self, delta: i64) {
+        self.selection = None;
         if let Some(s) = self.selected_slot_mut() {
             if delta > 0 {
                 s.scroll.from_bottom = s.scroll.from_bottom.saturating_sub(delta as usize);

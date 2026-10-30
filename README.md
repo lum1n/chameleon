@@ -58,6 +58,7 @@ Rust 1.88 or newer. The optional Lua runtime needs `--features lua`.
 | `y` / `N` | approve once or deny the open request (`N` opens the card with the denial selected) |
 | `o` | model, effort, mode, permission (as the harness reports them) |
 | `space` | expand or collapse the item under the cursor (reasoning, output, diffs) |
+| mouse | in the transcript, click a URL to open it in your browser; drag to select text, which is copied when you let go (with OSC 52, so it reaches your clipboard over SSH too, and with `wl-copy`, `xclip` or `pbcopy` when chameleon runs locally). Gutters and borders stay out of what's copied. A click elsewhere picks a session or focuses a pane, and the wheel scrolls. Your terminal's own selection still works with `shift` held |
 | `enter` / `esc` | on a subagent step, open its conversation; `esc` goes back to where you were |
 | `[` `]` / `a` | step through main and every subagent run / pick one from a list, running ones spinning |
 | `d` | the diff viewer: the repository's uncommitted changes on the session's host (untracked files too; for a worktree session, everything it changed there, commits included), or with `s` every edit the agent made this session, merged per file, and on Codex, which diffs its turns, what the latest turn changed (shell commands' changes too). `n`/`p` file, `]`/`[` hunk, `r` reload. On an edit step it opens on that file |

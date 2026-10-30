@@ -261,6 +261,10 @@ impl App {
 
         let mut sidebar = sidebar;
         let mut transcript = transcript;
+        let transcript_lines = transcript.lines.clone();
+        if let Some(sel) = self.selection.filter(|s| s.dragged) {
+            crate::select::highlight(&mut transcript.lines, &sel);
+        }
         let mut plan = plan;
         let mut composer = composer;
         for pane in [
@@ -281,6 +285,7 @@ impl App {
             sidebar: sidebar.as_ref().map(|s| s.rect),
             sidebar_hits: sidebar.as_ref().map(|s| s.hits.clone()).unwrap_or_default(),
             transcript: transcript_rect,
+            transcript_lines,
             composer: composer_rect,
         };
         Screen {

@@ -1857,3 +1857,61 @@ fn a_sandboxed_launch_says_what_the_host_did_with_it() {
     let header = a.screen().header.text();
     assert!(header.contains("unconfined"), "{header}");
 }
+
+#[test]
+fn a_click_opens_a_link_and_a_drag_copies_the_text() {
+    use chameleon_app::event::MouseKind;
+    let mut a = app();
+    let key = claude_ready(&mut a);
+    feed(
+        &mut a,
+        &key,
+        r#"{"type":"assistant","message":{"id":"m_l","type":"message","role":"assistant","content":[{"type":"text","text":"Opened a PR: https://github.com/lum1n/chameleon/pull/6.\n\n```sh\ngh pr view 6\n```"}]},"parent_tool_use_id":null,"session_id":"s"}"#,
+        2,
+    );
+    let screen = a.screen();
+    let t = screen.transcript.rect;
+    let find = |needle: &str| {
+        screen.transcript.lines.iter().enumerate().find_map(|(row, l)| {
+            let text = l.text();
+            text.find(needle).map(|i| {
+                (
+                    t.x + chameleon_app::wrap::width(&text[..i]) as u16,
+                    t.y + row as u16,
+                )
+            })
+        })
+    };
+    let (x, y) = find("github.com").expect("the link is drawn");
+    let mouse = |a: &mut App, x: u16, y: u16, kind: MouseKind| a.handle(AppEvent::Mouse { x, y, kind }, 3);
+
+    // A click opens it, without the sentence's full stop.
+    mouse(&mut a, x, y, MouseKind::Click);
+    let fx = mouse(&mut a, x, y, MouseKind::Release);
+    assert!(
+        fx.contains(&Effect::Open {
+            url: "https://github.com/lum1n/chameleon/pull/6".into()
+        }),
+        "{fx:?}"
+    );
+
+    // A drag over the code block copies the code, not its gutter.
+    let (x, y) = find("gh pr").expect("the code is drawn");
+    mouse(&mut a, t.x, y - 1, MouseKind::Click);
+    mouse(&mut a, x + 4, y, MouseKind::Drag);
+    mouse(&mut a, t.x + t.w + 5, y + 1, MouseKind::Drag);
+    let screen = a.screen();
+    let row = &screen.transcript.lines[(y - t.y) as usize];
+    assert!(row.spans.iter().any(|s| s.style.reversed), "the selection shows");
+    let fx = mouse(&mut a, t.x + t.w + 5, y + 1, MouseKind::Release);
+    assert!(
+        fx.contains(&Effect::Copy {
+            text: "gh pr view 6".into()
+        }),
+        "{fx:?}"
+    );
+    // Any key ends it.
+    a.handle(press(KeyCode::Esc), 4);
+    let row = &a.screen().transcript.lines[(y - t.y) as usize];
+    assert!(!row.spans.iter().any(|s| s.style.reversed));
+}

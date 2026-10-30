@@ -231,6 +231,22 @@ impl Runtime {
                         });
                     }
                 }
+                Effect::Open { url } => {
+                    if let Err(e) = crate::clipboard::open(&url) {
+                        let _ = self.tx.send(AppEvent::Notice {
+                            text: format!("can't open the link: {e}"),
+                            error: true,
+                        });
+                    }
+                }
+                Effect::Copy { text } => {
+                    if let Err(e) = crate::clipboard::copy(&text) {
+                        let _ = self.tx.send(AppEvent::Notice {
+                            text: format!("can't copy: {e}"),
+                            error: true,
+                        });
+                    }
+                }
                 Effect::SaveUsage { json } => {
                     if let Err(e) = crate::save_usage(&json) {
                         log::warn!("can't save usage: {e}");
@@ -318,6 +334,8 @@ impl Runtime {
                     CEvent::Mouse(m) => {
                         let kind = match m.kind {
                             MouseEventKind::Down(MouseButton::Left) => chameleon_app::event::MouseKind::Click,
+                            MouseEventKind::Drag(MouseButton::Left) => chameleon_app::event::MouseKind::Drag,
+                            MouseEventKind::Up(MouseButton::Left) => chameleon_app::event::MouseKind::Release,
                             MouseEventKind::ScrollUp => chameleon_app::event::MouseKind::ScrollUp,
                             MouseEventKind::ScrollDown => chameleon_app::event::MouseKind::ScrollDown,
                             _ => continue,

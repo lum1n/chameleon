@@ -291,7 +291,7 @@ pub(crate) fn card(
 ) -> Vec<Line> {
     let w = w.max(12);
     let cw = w - 4;
-    let rule = Style::new().fg(tone);
+    let rule = Style::new().fg(tone).deco();
     let title = truncate(title, cw.saturating_sub(2));
     let footer = truncate(footer, cw.saturating_sub(2));
     let mut out = vec![Line::new(vec![
@@ -305,7 +305,7 @@ pub(crate) fn card(
     for mut l in body {
         let pad = cw.saturating_sub(l.width());
         l.spans.insert(0, Span::new("│ ", rule));
-        l.push(Span::raw(" ".repeat(pad)));
+        l.push(Span::new(" ".repeat(pad), Style::new().deco()));
         l.push(Span::new(" │", rule));
         out.push(l);
     }
@@ -318,7 +318,7 @@ pub(crate) fn card(
             format!("╰{} ", "─".repeat(w.saturating_sub(width(&footer) + 5))),
             rule,
         ),
-        Span::new(footer, Style::new().fg(muted)),
+        Span::new(footer, Style::new().fg(muted).deco()),
         Span::new(" ─╯", rule),
     ]));
     out
@@ -594,12 +594,15 @@ pub fn render_item(item: &Item, look: Look, ctx: &ItemCtx) -> Vec<Line> {
     let (bar, boxed) = match (ctx.blocks, item.kind) {
         (Blocks::Cards, ItemKind::UserMessage) => (None, Some(("you", theme.user))),
         (Blocks::Cards, ItemKind::AgentMessage) => (None, Some((ctx.harness.display_name(), theme.border))),
-        (_, ItemKind::UserMessage) => (Some(Span::new("▎ ", Style::new().fg(theme.user).bold())), None),
+        (_, ItemKind::UserMessage) => (
+            Some(Span::new("▎ ", Style::new().fg(theme.user).bold().deco())),
+            None,
+        ),
         (Blocks::Bars, ItemKind::AgentMessage) => {
-            (Some(Span::new("▎ ", Style::new().fg(theme.accent))), None)
+            (Some(Span::new("▎ ", Style::new().fg(theme.accent).deco())), None)
         }
         (Blocks::Plain, _) => (None, None),
-        _ => (Some(Span::new("│ ", Style::new().fg(theme.border))), None),
+        _ => (Some(Span::new("│ ", Style::new().fg(theme.border).deco())), None),
     };
     let cw = match (&bar, boxed) {
         (Some(b), _) => cw.saturating_sub(width(&b.text)).max(8),
@@ -659,7 +662,8 @@ pub fn render_item(item: &Item, look: Look, ctx: &ItemCtx) -> Vec<Line> {
     }
     for l in &mut out {
         if look.selected {
-            l.spans.insert(0, Span::new("▌", Style::new().fg(theme.accent)));
+            l.spans
+                .insert(0, Span::new("▌", Style::new().fg(theme.accent).deco()));
         }
     }
     if look.gap {
@@ -882,7 +886,7 @@ fn output_lines(
     } else {
         Style::new().fg(ctx.theme.muted)
     };
-    let gutter = Line::styled("  │ ", Style::new().fg(ctx.theme.muted));
+    let gutter = Line::styled("  │ ", Style::new().fg(ctx.theme.muted).deco());
     let mut out = Vec::new();
     for l in shown {
         let mut line = gutter.clone();
@@ -893,7 +897,7 @@ fn output_lines(
 }
 
 fn diff_lines(f: &FileDiff, theme: &Theme, cw: usize) -> Vec<Line> {
-    let gutter = Line::styled("  │ ", Style::new().fg(theme.muted));
+    let gutter = Line::styled("  │ ", Style::new().fg(theme.muted).deco());
     let mut out = Vec::new();
     for h in &f.hunks {
         if h.old_start > 0 || h.new_start > 0 {

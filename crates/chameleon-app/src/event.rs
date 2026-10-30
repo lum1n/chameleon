@@ -115,7 +115,12 @@ pub enum AppEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseKind {
+    /// The left button went down.
     Click,
+    /// Moved with the left button down.
+    Drag,
+    /// The left button came up.
+    Release,
     ScrollUp,
     ScrollDown,
 }
@@ -170,6 +175,14 @@ pub enum Effect {
     /// [`crate::App::load_usage`].
     SaveUsage {
         json: String,
+    },
+    /// Open a URL with the local machine's opener (`open`, `xdg-open`).
+    Open {
+        url: String,
+    },
+    /// Put text on the clipboard (OSC 52, which works over SSH too).
+    Copy {
+        text: String,
     },
     Quit,
 }

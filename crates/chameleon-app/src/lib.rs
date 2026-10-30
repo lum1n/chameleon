@@ -13,6 +13,7 @@ pub mod markdown;
 pub mod model;
 pub mod overlay;
 mod pump;
+pub mod select;
 pub mod slot;
 pub mod style;
 pub mod themes;

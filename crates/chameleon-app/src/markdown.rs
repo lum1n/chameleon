@@ -45,12 +45,12 @@ pub fn render(text: &str, s: &MdStyle, w: usize) -> Vec<Line> {
 
         if let Some(fence) = trimmed.strip_prefix("```") {
             let lang = fence.trim_start_matches('`').trim();
-            let mut top = Line::styled("╭─", s.muted);
+            let mut top = Line::styled("╭─", s.muted.deco());
             if !lang.is_empty() {
-                top.push(Span::new(format!(" {lang}"), s.muted.italic()));
+                top.push(Span::new(format!(" {lang}"), s.muted.italic().deco()));
             }
             out.push(top);
-            let gutter = Line::styled("│ ", s.muted);
+            let gutter = Line::styled("│ ", s.muted.deco());
             i += 1;
             while i < src.len() && !src[i].trim_start().starts_with("```") {
                 let mut l = gutter.clone();
@@ -58,7 +58,7 @@ pub fn render(text: &str, s: &MdStyle, w: usize) -> Vec<Line> {
                 out.extend(wrap_hang(&l, w, &gutter));
                 i += 1;
             }
-            out.push(Line::styled("╰─", s.muted));
+            out.push(Line::styled("╰─", s.muted.deco()));
             i += 1; // the closing fence, if any
             continue;
         }
@@ -89,7 +89,7 @@ pub fn render(text: &str, s: &MdStyle, w: usize) -> Vec<Line> {
             inline(title, style, s, &mut l);
             out.extend(wrap_hang(&l, w, &Line::default()));
         } else if let Some(rest) = trimmed.strip_prefix('>') {
-            let bar = Line::styled("▎ ", s.muted);
+            let bar = Line::styled("▎ ", s.muted.deco());
             let mut l = bar.clone();
             inline(rest.trim_start(), s.quote, s, &mut l);
             out.extend(wrap_hang(&l, w, &bar));

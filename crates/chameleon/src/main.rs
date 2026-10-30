@@ -1,5 +1,6 @@
 //! chameleon: one terminal UI for every agent harness, on top of ACC.
 
+mod clipboard;
 mod hooks;
 mod host;
 #[cfg(feature = "lua")]

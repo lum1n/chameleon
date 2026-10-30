@@ -71,6 +71,11 @@ pub struct Style {
     pub italic: bool,
     pub underline: bool,
     pub reversed: bool,
+    /// Part of a URL, which a click opens; one id per URL, so a URL a
+    /// wrap split over rows is put back together (`0`: not a link).
+    pub link: u32,
+    /// Bars, gutters and borders: drawn, but left out of copied text.
+    pub deco: bool,
 }
 
 impl Style {
@@ -83,6 +88,8 @@ impl Style {
             italic: false,
             underline: false,
             reversed: false,
+            link: 0,
+            deco: false,
         }
     }
     pub const fn fg(mut self, c: Color) -> Self {
@@ -111,6 +118,10 @@ impl Style {
     }
     pub const fn reversed(mut self) -> Self {
         self.reversed = true;
+        self
+    }
+    pub const fn deco(mut self) -> Self {
+        self.deco = true;
         self
     }
 }
