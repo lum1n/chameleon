@@ -8,6 +8,7 @@ pub mod config;
 pub mod diff;
 pub mod event;
 pub mod hooks;
+pub mod image;
 pub mod keymap;
 pub mod loadout;
 pub mod markdown;

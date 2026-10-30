@@ -204,11 +204,12 @@ pub enum Action {
     Merge,
     Discard,
     AutoApprove,
+    PasteImage,
     Jump(u8),
 }
 
 impl Action {
-    pub const ALL: [Action; 42] = [
+    pub const ALL: [Action; 43] = [
         Action::Quit,
         Action::Help,
         Action::SelectUp,
@@ -250,6 +251,7 @@ impl Action {
         Action::Merge,
         Action::Discard,
         Action::AutoApprove,
+        Action::PasteImage,
         Action::Jump(0),
     ];
 
@@ -314,6 +316,7 @@ impl Action {
             Action::Merge => "merge the session's worktree",
             Action::Discard => "discard the session's worktree",
             Action::AutoApprove => "auto-approve what isn't dangerous, or stop",
+            Action::PasteImage => "attach the clipboard's image to the prompt",
             Action::Jump(_) => "jump to session 1-9, 0",
         }
     }
@@ -351,6 +354,7 @@ impl Default for Keymap {
             (Key::ctrl(Char('e')), Action::PageDown),
             (Key::ctrl(Char('g')), Action::FollowTail),
             (Key::ctrl(Char('b')), Action::ToggleSidebar),
+            (Key::ctrl(Char('v')), Action::PasteImage),
             (Key::new(Tab), Action::FocusNext),
             (Key::new(BackTab), Action::FocusPrev),
             (Key::new(Esc), Action::Back),

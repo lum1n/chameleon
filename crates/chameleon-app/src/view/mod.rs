@@ -180,8 +180,8 @@ impl App {
 
         // The composer spans the main column, its text inset by padding.
         let composer_text_w = composer::text_width(main_w as usize);
-        let composer_lines = composer::wrapped_lines(&self.composer, composer_text_w);
-        let composer_h = (composer_lines.len().clamp(1, COMPOSER_MAX_LINES) + 2 * composer::PAD_Y) as u16;
+        let composer_rows = composer::rows(&self.composer, composer_text_w);
+        let composer_h = (composer_rows.clamp(1, COMPOSER_MAX_LINES) + 2 * composer::PAD_Y) as u16;
         let composer_h = composer_h.min(body_h.saturating_sub(1));
         let composer_y = (body_y + body_h).saturating_sub(composer_h);
         let composer_rect = Rect::new(main_x, composer_y, main_w, composer_h);

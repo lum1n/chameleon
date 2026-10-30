@@ -5,7 +5,8 @@
 //! ```text
 //! ├──────────────────────────────────────────────
 //!
-//!   ❯ fix the failing tests and explain what
+//!   ❯ ▣ shot.png 240 KB  ▣ clipboard 1.2 MB
+//!     fix the failing tests and explain what
 //!     broke
 //!                     enter send · alt-enter line
 //! ```
@@ -64,14 +65,44 @@ pub fn wrapped(c: &Composer, w: usize) -> (Vec<Line>, (usize, usize)) {
     (lines, cursor)
 }
 
-pub fn wrapped_lines(c: &Composer, w: usize) -> Vec<Line> {
-    wrapped(c, w).0
+/// The rows the composer's content takes: its images, then its text.
+pub fn rows(c: &Composer, w: usize) -> usize {
+    wrapped(c, w).0.len() + usize::from(!c.images().is_empty())
+}
+
+/// The images, one row of `▣ name size`, cut to `w` columns.
+fn image_row(c: &Composer, w: usize, style: Style) -> Line {
+    let text = c
+        .images()
+        .iter()
+        .map(|i| format!("▣ {}", i.label()))
+        .collect::<Vec<_>>()
+        .join("  ");
+    let text = if width(&text) > w {
+        let mut cut = String::new();
+        for ch in text.chars() {
+            if width(&cut) + 2 > w {
+                break;
+            }
+            cut.push(ch);
+        }
+        cut.push('…');
+        cut
+    } else {
+        text
+    };
+    Line::new(vec![Span::new(text, style)])
 }
 
 pub fn build(app: &App, rect: Rect) -> PaneView {
     let theme = app.theme;
     let w = text_width(rect.w as usize);
-    let (lines, (cl, cc)) = wrapped(&app.composer, w);
+    let (mut lines, (cl, cc)) = wrapped(&app.composer, w);
+    let has_images = !app.composer.images().is_empty();
+    if has_images {
+        lines.insert(0, image_row(&app.composer, w, Style::new().fg(theme.accent)));
+    }
+    let cl = cl + usize::from(has_images);
     let focused = app.focus == Pane::Composer;
     let muted = Style::new().fg(theme.muted);
     // Too short for air: the text alone.
@@ -114,6 +145,11 @@ pub fn build(app: &App, rect: Rect) -> PaneView {
         }
         if focused {
             keys.push("enter send · alt-enter line".to_owned());
+            keys.push(if has_images && app.composer.cursor() == 0 {
+                "backspace drops an image".to_owned()
+            } else {
+                "ctrl-v image".to_owned()
+            });
         }
         let keys = keys.join(" · ");
         let mut bottom = Line::default();

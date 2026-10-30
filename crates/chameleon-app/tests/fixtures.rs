@@ -2017,3 +2017,53 @@ fn a_click_opens_a_link_and_a_drag_copies_the_text() {
     let row = &a.screen().transcript.lines[(y - t.y) as usize];
     assert!(!row.spans.iter().any(|s| s.style.reversed));
 }
+
+#[test]
+fn a_dropped_image_goes_inline_with_the_prompt() {
+    use chameleon_app::image::Image;
+    let mut a = app();
+    let _key = claude_ready(&mut a);
+    let png = Image::from_bytes("shot.png", b"\x89PNG\r\n\x1a\nPIXELS").unwrap();
+    let data = png.attachment.data.clone();
+    a.handle(
+        AppEvent::Images {
+            pasted: "/tmp/shot.png".into(),
+            images: vec![
+                Ok(png),
+                Err("notes.txt isn't a PNG, JPEG, GIF or WebP image".into()),
+            ],
+        },
+        3,
+    );
+    let screen = a.screen();
+    assert!(
+        screen
+            .composer
+            .lines
+            .iter()
+            .any(|l| l.text().contains("▣ shot.png"))
+    );
+    assert!(screen.toasts.iter().any(|t| t.text().contains("notes.txt")));
+    // Images alone are a prompt; they ride the harness's own stdin.
+    let fx = a.handle(press(KeyCode::Enter), 4);
+    let input = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::Input { exec, .. } => Some(String::from_utf8_lossy(&exec.stdin).into_owned()),
+            _ => None,
+        })
+        .expect("the prompt is written to the harness");
+    assert!(input.contains(&data), "{input}");
+    let composer = a.screen().composer;
+    assert!(
+        !composer.lines.iter().any(|l| l.text().contains("▣")),
+        "sent and gone"
+    );
+}
+
+#[test]
+fn ctrl_v_asks_for_the_clipboards_image() {
+    let mut a = app();
+    let fx = a.handle(AppEvent::Key(Key::ctrl(KeyCode::Char('v'))), 1);
+    assert_eq!(fx, vec![Effect::PasteImage]);
+}

@@ -1,5 +1,7 @@
-//! The prompt editor: a small multi-line text buffer with a cursor.
+//! The prompt editor: a small multi-line text buffer with a cursor, and
+//! the images that go with it.
 
+use crate::image::Image;
 use crate::keymap::{Key, KeyCode};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -9,6 +11,8 @@ pub struct Composer {
     cursor: usize,
     history: Vec<String>,
     history_pos: Option<usize>,
+    /// Images to send with the text, in the order they came.
+    images: Vec<Image>,
 }
 
 impl Composer {
@@ -16,8 +20,28 @@ impl Composer {
         &self.text
     }
 
+    /// No text and no images.
     pub fn is_empty(&self) -> bool {
-        self.text.trim().is_empty()
+        self.text.trim().is_empty() && self.images.is_empty()
+    }
+
+    pub fn images(&self) -> &[Image] {
+        &self.images
+    }
+
+    pub fn add_image(&mut self, image: Image) {
+        self.images.push(image);
+    }
+
+    /// Takes the images out for sending.
+    pub fn take_images(&mut self) -> Vec<Image> {
+        std::mem::take(&mut self.images)
+    }
+
+    /// Puts back a prompt that couldn't be sent.
+    pub fn restore(&mut self, text: &str, images: Vec<Image>) {
+        self.set(text);
+        self.images = images;
     }
 
     pub fn cursor(&self) -> usize {
@@ -77,6 +101,9 @@ impl Composer {
             KeyCode::Backspace => {
                 if key.alt || key.ctrl {
                     self.delete_word();
+                } else if self.cursor == 0 {
+                    // The images sit before the text; the last one goes.
+                    return self.images.pop().is_some();
                 } else if self.cursor > 0 {
                     let at = self.byte_at(self.cursor - 1);
                     self.text.remove(at);
@@ -233,5 +260,22 @@ mod tests {
         assert!(c.is_empty());
         c.key(&Key::new(KeyCode::Up));
         assert_eq!(c.text(), t);
+    }
+
+    #[test]
+    fn backspace_at_the_start_drops_the_last_image() {
+        let mut c = Composer::default();
+        let png = |n: &str| Image::from_bytes(n, b"\x89PNG\r\n\x1a\n").unwrap();
+        c.add_image(png("a.png"));
+        c.add_image(png("b.png"));
+        assert!(!c.is_empty(), "images alone are a prompt");
+        c.insert("x");
+        c.key(&Key::new(KeyCode::Backspace));
+        assert_eq!(c.images().len(), 2, "the text goes first");
+        c.key(&Key::new(KeyCode::Backspace));
+        assert_eq!(c.images()[0].name, "a.png");
+        assert!(c.key(&Key::new(KeyCode::Backspace)));
+        assert!(c.is_empty());
+        assert!(!c.key(&Key::new(KeyCode::Backspace)), "nothing left to drop");
     }
 }

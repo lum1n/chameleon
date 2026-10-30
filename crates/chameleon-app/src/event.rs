@@ -71,6 +71,13 @@ pub enum AppEvent {
     Key(Key),
     /// Text pasted into the terminal.
     Paste(String),
+    /// Images read for the composer: the files a paste named (`pasted`
+    /// is that text, for an overlay, which takes it as text), or the
+    /// clipboard's image (`pasted` empty).
+    Images {
+        pasted: String,
+        images: Vec<Result<crate::image::Image, String>>,
+    },
     Resize {
         width: u16,
         height: u16,
@@ -184,5 +191,8 @@ pub enum Effect {
     Copy {
         text: String,
     },
+    /// Read the image on the local clipboard, answered with
+    /// [`AppEvent::Images`].
+    PasteImage,
     Quit,
 }

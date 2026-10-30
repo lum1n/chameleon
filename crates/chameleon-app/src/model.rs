@@ -3,12 +3,13 @@
 
 use std::collections::VecDeque;
 
-use acc_core::command::Command;
+use acc_core::command::{Attachment, Command};
 use acc_core::harness::Availability;
 
 use crate::composer::Composer;
 use crate::config::{Config, HostConfig, Theme};
 use crate::event::{AppEvent, Effect, ExecTag, HostId, MouseKind};
+use crate::image::Image;
 use crate::keymap::{Action, Key, KeyCode, Keymap};
 use crate::overlay::{ConfirmAction, Overlay};
 use crate::slot::{Phase, SessionKey, Slot};
@@ -302,6 +303,10 @@ impl App {
                     self.composer.insert(&text);
                     self.focus = Pane::Composer;
                 }
+                Vec::new()
+            }
+            AppEvent::Images { pasted, images } => {
+                self.on_images(&pasted, images);
                 Vec::new()
             }
             AppEvent::Resize { width, height } => {
@@ -831,6 +836,7 @@ impl App {
                 Vec::new()
             }
             Action::AutoApprove => self.toggle_auto_approve(),
+            Action::PasteImage => vec![Effect::PasteImage],
             Action::Usage => {
                 self.overlay = Some(Overlay::Usage { scroll: 0 });
                 Vec::new()
@@ -1021,18 +1027,67 @@ impl App {
             return Vec::new();
         }
         let text = self.composer.take();
+        let images = self.composer.take_images();
         self.focus = Pane::Transcript;
         if let Some(s) = self.slot_mut(&key) {
             // The prompt goes to the main agent; show it there.
             s.go_to_agent(None);
         }
-        self.send(
+        let attachments = images.iter().map(|i| i.attachment.clone()).collect();
+        match self.try_send(
             &key,
             Command::Prompt {
-                text,
-                attachments: Vec::new(),
+                text: text.clone(),
+                attachments,
             },
-        )
+        ) {
+            Ok(out) => out,
+            Err(out) => {
+                // Refused (an agent that takes no images, say): keep it to
+                // edit, rather than lose the images.
+                self.composer.restore(&text, images);
+                self.focus = Pane::Composer;
+                out
+            }
+        }
+    }
+
+    /// Images for the composer, read by the runtime; an overlay takes the
+    /// paste they came from as text.
+    fn on_images(&mut self, pasted: &str, images: Vec<Result<Image, String>>) {
+        if let Some(o) = &mut self.overlay {
+            o.paste(pasted);
+            return;
+        }
+        for image in images {
+            let image = match image {
+                Ok(image) => image,
+                Err(e) => {
+                    self.toast(e, true);
+                    continue;
+                }
+            };
+            let total: usize = self
+                .composer
+                .images()
+                .iter()
+                .chain([&image])
+                .map(|i| i.attachment.raw_len())
+                .sum();
+            if total > Attachment::MAX_PROMPT_BYTES {
+                self.toast(
+                    format!(
+                        "no room for {}: a prompt carries {} MiB of images",
+                        image.name,
+                        Attachment::MAX_PROMPT_BYTES >> 20
+                    ),
+                    true,
+                );
+                continue;
+            }
+            self.composer.add_image(image);
+            self.focus = Pane::Composer;
+        }
     }
 
     fn send_selected(&mut self, cmd: Command) -> Vec<Effect> {

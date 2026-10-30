@@ -1,7 +1,11 @@
-//! Opening links and copying text for the mouse.
+//! Opening links and copying text for the mouse, and reading images to
+//! send with a prompt.
 
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
+
+use chameleon_app::image::Image;
 
 /// Opens `url` with the machine's opener, without waiting for it.
 pub fn open(url: &str) -> std::io::Result<()> {
@@ -71,6 +75,102 @@ fn native(text: &str) -> std::io::Result<()> {
         return Ok(());
     }
     Ok(())
+}
+
+/// The image on this machine's clipboard: `wl-paste` or `xclip` on Linux,
+/// AppleScript on macOS. Over SSH, the clipboard is the remote machine's,
+/// which is seldom there to read.
+pub fn image() -> Result<Image, String> {
+    let bytes = if cfg!(target_os = "macos") {
+        macos_image()?
+    } else if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        let types = output(&["wl-paste", "--list-types"])?;
+        let ty = image_type(&types)?;
+        output_bytes(&["wl-paste", "--no-newline", "--type", &ty])?
+    } else if std::env::var_os("DISPLAY").is_some() {
+        let types = output(&["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"])?;
+        let ty = image_type(&types)?;
+        output_bytes(&["xclip", "-selection", "clipboard", "-t", &ty, "-o"])?
+    } else {
+        return Err(if std::env::var_os("SSH_CONNECTION").is_some() {
+            "no clipboard to read over SSH; paste an image's path instead".into()
+        } else {
+            "no clipboard to read (no Wayland or X display)".into()
+        });
+    };
+    Image::from_bytes("clipboard", &bytes)
+}
+
+/// The image files a paste names, read, when it names nothing else and
+/// they are all there; `None` leaves the paste as text.
+pub fn pasted_images(text: &str) -> Option<Vec<Result<Image, String>>> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let paths: Vec<PathBuf> = chameleon_app::image::pasted_paths(text)?
+        .into_iter()
+        .map(|p| match (p.strip_prefix("~/"), &home) {
+            (Some(rest), Some(home)) => home.join(rest),
+            _ => PathBuf::from(p),
+        })
+        .collect();
+    if !paths.iter().all(|p| p.is_file()) {
+        return None;
+    }
+    Some(
+        paths
+            .iter()
+            .map(|p| {
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let bytes = std::fs::read(p).map_err(|e| format!("can't read {name}: {e}"))?;
+                Image::from_bytes(name, &bytes)
+            })
+            .collect(),
+    )
+}
+
+/// The first image type a clipboard offers that every harness takes.
+fn image_type(types: &str) -> Result<String, String> {
+    const TAKEN: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+    TAKEN
+        .iter()
+        .find(|t| types.lines().any(|l| l.trim() == **t))
+        .map(|t| (*t).to_owned())
+        .ok_or_else(|| "no image on the clipboard".to_owned())
+}
+
+/// The clipboard as PNG, which AppleScript prints as `«data PNGf89504E…»`.
+fn macos_image() -> Result<Vec<u8>, String> {
+    let out = output(&["osascript", "-e", "the clipboard as «class PNGf»"])
+        .map_err(|_| "no image on the clipboard".to_owned())?;
+    let hex = out
+        .trim()
+        .strip_prefix("«data PNGf")
+        .and_then(|h| h.strip_suffix('»'))
+        .ok_or("no image on the clipboard")?;
+    (0..hex.len() / 2)
+        .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16))
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("can't read the clipboard: {e}"))
+}
+
+fn output(argv: &[&str]) -> Result<String, String> {
+    output_bytes(argv).map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
+/// What `argv` prints, when it runs and succeeds.
+fn output_bytes(argv: &[&str]) -> Result<Vec<u8>, String> {
+    let out = Command::new(argv[0])
+        .args(&argv[1..])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| format!("can't run {}: {e}", argv[0]))?;
+    if !out.status.success() {
+        return Err("no image on the clipboard".into());
+    }
+    Ok(out.stdout)
 }
 
 fn base64(bytes: &[u8]) -> String {

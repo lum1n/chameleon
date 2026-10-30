@@ -247,6 +247,17 @@ impl Runtime {
                         });
                     }
                 }
+                Effect::PasteImage => {
+                    let tx = self.tx.clone();
+                    // Off the loop: the clipboard tools can take a moment.
+                    std::thread::spawn(move || {
+                        let images = vec![crate::clipboard::image()];
+                        let _ = tx.send(AppEvent::Images {
+                            pasted: String::new(),
+                            images,
+                        });
+                    });
+                }
                 Effect::SaveUsage { json } => {
                     if let Err(e) = crate::save_usage(&json) {
                         log::warn!("can't save usage: {e}");
@@ -329,7 +340,11 @@ impl Runtime {
                             None => continue,
                         }
                     }
-                    CEvent::Paste(text) => AppEvent::Paste(text),
+                    // Files dropped on the terminal arrive as their paths.
+                    CEvent::Paste(text) => match crate::clipboard::pasted_images(&text) {
+                        Some(images) => AppEvent::Images { pasted: text, images },
+                        None => AppEvent::Paste(text),
+                    },
                     CEvent::Resize(w, h) => AppEvent::Resize { width: w, height: h },
                     CEvent::Mouse(m) => {
                         let kind = match m.kind {

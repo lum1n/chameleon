@@ -112,13 +112,19 @@ impl App {
 
     /// Sends a command to a session, or relaunches when the harness needs it.
     pub(crate) fn send(&mut self, key: &SessionKey, cmd: Command) -> Vec<Effect> {
+        self.try_send(key, cmd).unwrap_or_else(|out| out)
+    }
+
+    /// [`Self::send`], telling a command that didn't go (`Err`, after a
+    /// toast saying why) from one that did.
+    pub(crate) fn try_send(&mut self, key: &SessionKey, cmd: Command) -> Result<Vec<Effect>, Vec<Effect>> {
         let now = self.now_ms;
         let Some(slot) = self.slot_mut(key) else {
-            return Vec::new();
+            return Err(Vec::new());
         };
         let Some(session) = slot.session.as_mut() else {
             self.toast("the session isn't attached", false);
-            return Vec::new();
+            return Err(Vec::new());
         };
         let invoked = match &cmd {
             Command::Invoke { name, .. } => Some(name.clone()),
@@ -139,7 +145,7 @@ impl App {
                 let i = self.slot_index(key).unwrap_or(0);
                 out.extend(self.process_updates(i, updates));
                 out.extend(self.flush(i));
-                out
+                Ok(out)
             }
             Ok(Outbound::Relaunch(req)) => {
                 let host = key.host.clone();
@@ -154,18 +160,18 @@ impl App {
                     format!("{what} {}…", req.harness.map(Harness::display_name).unwrap_or("")),
                     false,
                 );
-                self.launch(&host, req)
+                Ok(self.launch(&host, req))
             }
             Err(SessionError::Driver(DriverError::MissingArgument(what))) => {
                 match invoked.and_then(|name| self.picker(key, &name)) {
                     Some(picker) => self.overlay = Some(picker),
                     None => self.toast(format!("this command needs {what}"), true),
                 }
-                Vec::new()
+                Err(Vec::new())
             }
             Err(e) => {
                 self.toast(e.to_string(), true);
-                Vec::new()
+                Err(Vec::new())
             }
         }
     }
