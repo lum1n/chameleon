@@ -621,6 +621,38 @@ command = "true"
 }
 
 #[test]
+fn the_header_shows_a_sandbox_the_spec_has_lost() {
+    // A client that predates sandboxes rewrote the spec without one; the
+    // host's status still says the harness runs in Seatbelt.
+    let mut a = app();
+    let id = "claude-abcdefghijklmnopqrstuvwx";
+    let spec = format!(
+        "{{\"v\":1,\"id\":\"{id}\",\"harness\":\"claude\",\"cwd\":\"/w\",\
+         \"launch\":{{\"program\":\"claude\",\"args\":[],\"env\":[],\
+         \"protocol\":\"claude_stream_json\"}},\"created_ms\":1}}"
+    );
+    a.handle(
+        AppEvent::ExecDone {
+            host: "local".into(),
+            tag: ExecTag::List,
+            result: ok(&format!("S\t{id}\talive 1 0\t1700000000\nJ\t{spec}\n")),
+        },
+        3,
+    );
+    assert!(!a.screen().header.text().contains("sandboxed"));
+    a.handle(
+        AppEvent::ExecDone {
+            host: "local".into(),
+            tag: ExecTag::Status(id.into()),
+            result: ok("alive 1 0\nB seatbelt\n"),
+        },
+        4,
+    );
+    let header = a.screen().header.text();
+    assert!(header.contains("sandboxed"), "{header}");
+}
+
+#[test]
 fn codex_quota_shows_in_the_status_bar() {
     let mut a = app();
     let (key, _) = launch(&mut a, Harness::Codex, "go");
