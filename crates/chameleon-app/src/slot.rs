@@ -136,6 +136,8 @@ pub struct Slot {
     /// What the latest turn changed, as the harness diffed it (Codex's
     /// `Event::TurnDiff`; shell commands' changes included).
     pub turn_diff: Option<Vec<FileDiff>>,
+    /// Requests auto-approval has answered or left to you, by request id.
+    pub auto_seen: HashSet<String>,
 }
 
 impl Slot {
@@ -164,6 +166,7 @@ impl Slot {
             panels: HashMap::new(),
             plan: None,
             turn_diff: None,
+            auto_seen: HashSet::new(),
         }
     }
 

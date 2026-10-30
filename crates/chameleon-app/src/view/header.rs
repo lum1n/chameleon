@@ -21,6 +21,9 @@ pub fn build(app: &App, w: usize) -> Line {
 
     // Right: how many sessions are in each state, loudest first.
     let mut right = Line::default();
+    if app.auto_approve {
+        right.push(Span::new("auto ", Style::new().fg(t.permission).bold()));
+    }
     let tally = |u: Urgency| app.slots.iter().filter(|s| s.urgency() == u).count();
     let groups = [
         (Urgency::Blocked, "⚠", t.permission),

@@ -2,6 +2,7 @@
 //! [`AppEvent`]s and returns [`Effect`]s for the runtime; [`App::screen`]
 //! describes one frame with no terminal types in it.
 
+pub mod auto;
 pub mod composer;
 pub mod config;
 pub mod diff;

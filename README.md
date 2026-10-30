@@ -56,6 +56,7 @@ Rust 1.88 or newer. The optional Lua runtime needs `--features lua`.
 | typing | starts a prompt; `enter` sends, `alt-enter` adds a line |
 | `/` | command palette: the harness's slash commands, chameleon actions, hooks. Commands that take a value (`/model`, `/mode`) open a picker, dialogs (`/mcp`, `/status`) open a panel with their actions, and TUI-only ones (`/doctor`) hand the terminal to the harness |
 | `y` / `N` | approve once or deny the open request (`N` opens the card with the denial selected) |
+| `A` | auto-approve: for harnesses without a mode that skips approvals. While it's on (`auto` in the header), chameleon allows every approval the harness asks for, once, except what looks dangerous: deleting (`rm`, `find -delete`, `git clean`, `git reset --hard`, ...), `sudo` and other escalation, `kill`, `chmod`, `git push`, publishing, a script piped into a shell, files that may hold secrets (`.env`, `.ssh`, keys), system files, dotfiles outside the project (`~/.config`, `~/.bashrc`) and edits outside the project. Those, questions, and requests that don't say what they run, are left to you, and a toast says why. Off at every start unless the config says otherwise |
 | `o` | model, effort, mode, permission (as the harness reports them) |
 | `space` | expand or collapse the item under the cursor (reasoning, output, diffs) |
 | mouse | in the transcript, click a URL to open it in your browser; drag to select text, which is copied when you let go (with OSC 52, so it reaches your clipboard over SSH too, and with `wl-copy`, `xclip` or `pbcopy` when chameleon runs locally). Gutters and borders stay out of what's copied. A click elsewhere picks a session or focuses a pane, and the wheel scrolls. Your terminal's own selection still works with `shift` held |
@@ -133,6 +134,11 @@ command = "git status" # a command's start, whole words; never matches chained c
 decision = "deny"      # deny wins over allow; what no rule matches is left to you
 path = "**/.env"       # files the tool acts on, relative to the session's directory
 
+[auto_approve]         # A toggles it; these only add to what it leaves to you
+enabled = false        # start with it on
+ask_commands = ["make deploy"]  # a command's start, whole words
+ask_paths = ["migrations/**"]   # relative to the session's directory, or ~/...
+
 [watch]                # on the host of every session started here, even with chameleon
 url = "https://ntfy.sh/my-topic"  # closed: post each approval waiting, turn done, error
 # command = "..."      # and exit, or run a command there (event JSON on stdin)
@@ -145,7 +151,9 @@ hide = ["~/secrets"]   # more unreadable paths
 ```
 
 The policy answers for every session chameleon attaches to, and says so in a toast. Set it in
-one client only (not Sessh as well), or both answer the same request.
+one client only (not Sessh as well), or both answer the same request. The policy goes first:
+auto-approval only sees what no rule answered, so a `deny` rule still denies while it's on.
+Like the policy, auto-approval answers every session this chameleon is attached to.
 
 ## Themes
 

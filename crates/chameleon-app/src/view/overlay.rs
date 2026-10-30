@@ -106,6 +106,32 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
                     ]));
                 }
             }
+            let auto = &app.cfg.auto_approve;
+            lines.push(Line::default());
+            lines.push(Line::styled(
+                if app.auto_approve {
+                    "auto-approve: on (A turns it off)"
+                } else {
+                    "auto-approve: off (A turns it on)"
+                },
+                accent.bold(),
+            ));
+            lines.push(Line::raw(
+                "allows every approval except deleting, sudo, pushing, \
+                 secrets, dotfiles and edits outside the project",
+            ));
+            for c in &auto.ask_commands {
+                lines.push(Line::new(vec![
+                    Span::new(fit("ask", 18), accent),
+                    Span::raw(format!("command {c:?}")),
+                ]));
+            }
+            for p in &auto.ask_paths {
+                lines.push(Line::new(vec![
+                    Span::new(fit("ask", 18), accent),
+                    Span::raw(format!("path {p}")),
+                ]));
+            }
             if !app.problems.is_empty() {
                 lines.push(Line::default());
                 lines.push(Line::styled(

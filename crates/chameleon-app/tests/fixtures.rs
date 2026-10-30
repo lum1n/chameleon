@@ -1591,6 +1591,76 @@ fn the_policy_answers_matching_approvals_and_says_so() {
     );
 }
 
+/// A Claude session waiting on approval of `command` (the fixture's own
+/// is `touch acc-probe.txt`).
+fn claude_asking(a: &mut App, command: &str) -> (SessionKey, Vec<Effect>) {
+    let (key, _) = launch(a, Harness::Claude, "");
+    a.handle(
+        AppEvent::ExecDone {
+            host: key.host.clone(),
+            tag: ExecTag::Launch(key.id.clone()),
+            result: ok("1\n"),
+        },
+        4,
+    );
+    let partial: String = CLAUDE_PERMISSION
+        .lines()
+        .take_while(|l| !l.contains("\"tool_result\""))
+        .map(|l| format!("{}\n", l.replace("touch acc-probe.txt", command)))
+        .collect();
+    let fx = feed(a, &key, &partial, 5);
+    (key, fx)
+}
+
+fn toasts(a: &mut App) -> Vec<String> {
+    a.screen().toasts.iter().map(|l| l.text()).collect()
+}
+
+#[test]
+fn auto_approve_allows_what_isnt_dangerous() {
+    let mut a = app_with("[auto_approve]\nenabled = true\n");
+    let (_, fx) = claude_asking(&mut a, "touch acc-probe.txt");
+    let sent = written(&fx);
+    assert!(
+        sent.iter()
+            .any(|v| v.to_string().contains("\"behavior\":\"allow\"")),
+        "{sent:?}"
+    );
+    let session = a.selected().unwrap().session.as_ref().unwrap();
+    assert!(session.permissions().is_empty());
+    let t = toasts(&mut a);
+    assert!(t.iter().any(|t| t.starts_with("auto-approved")), "{t:?}");
+}
+
+#[test]
+fn auto_approve_leaves_dangerous_requests_to_you() {
+    let mut a = app_with("[auto_approve]\nenabled = true\n");
+    let (_, fx) = claude_asking(&mut a, "rm -rf acc-probe.txt");
+    assert!(written(&fx).is_empty());
+    let session = a.selected().unwrap().session.as_ref().unwrap();
+    assert_eq!(session.permissions().len(), 1);
+    let t = toasts(&mut a);
+    assert!(t.iter().any(|t| t.contains("`rm` is dangerous")), "{t:?}");
+}
+
+#[test]
+fn turning_auto_approve_on_answers_what_waits() {
+    let mut a = app();
+    let (_, fx) = claude_asking(&mut a, "touch acc-probe.txt");
+    assert!(written(&fx).is_empty(), "off by default");
+    a.handle(press(KeyCode::Esc), 6);
+    let fx = a.handle(ch('A'), 6);
+    assert!(
+        written(&fx)
+            .iter()
+            .any(|v| v.to_string().contains("\"behavior\":\"allow\"")),
+        "{fx:?}"
+    );
+    assert!(a.screen().header.text().contains("auto"));
+    a.handle(ch('A'), 7);
+    assert!(!a.screen().header.text().contains("auto"));
+}
+
 #[test]
 fn usage_adds_up_and_is_saved_on_quit() {
     use chameleon_app::overlay::Overlay;

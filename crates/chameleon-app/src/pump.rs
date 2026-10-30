@@ -657,10 +657,82 @@ impl App {
         for id in panels {
             self.show_panel(&key, &id);
         }
-        let mut out = Vec::new();
+        let mut out = self.auto_answer(i);
+        let waiting = self.slots[i]
+            .session
+            .as_ref()
+            .is_some_and(|s| s.permissions().iter().any(|p| p.kind == BlockKind::Permission));
+        if !waiting {
+            // Answered already: nothing for a hook to tell you about.
+            events.retain(|e| *e != HookEvent::Permission);
+        }
         events.dedup();
         for e in events {
             out.extend(self.hook_effects(i, e));
+        }
+        out
+    }
+
+    /// Turns auto-approval on or off; on, it answers what is waiting now.
+    pub(crate) fn toggle_auto_approve(&mut self) -> Vec<Effect> {
+        self.auto_approve = !self.auto_approve;
+        if !self.auto_approve {
+            self.toast("auto-approve off", false);
+            return Vec::new();
+        }
+        self.toast("auto-approve on: dangerous requests still ask", false);
+        for slot in &mut self.slots {
+            // Requests left to you before get another look.
+            slot.auto_seen.clear();
+        }
+        (0..self.slots.len()).flat_map(|i| self.auto_answer(i)).collect()
+    }
+
+    /// Allows the session's waiting approvals that don't look dangerous,
+    /// while auto-approval is on. Each request is looked at once; one left
+    /// to you says why in a toast. Questions are always left to you.
+    fn auto_answer(&mut self, i: usize) -> Vec<Effect> {
+        if !self.auto_approve {
+            return Vec::new();
+        }
+        let slot = &mut self.slots[i];
+        let Some(session) = &slot.session else {
+            return Vec::new();
+        };
+        if session.is_replaying() || !session.is_alive() {
+            return Vec::new();
+        }
+        let mut answers = Vec::new();
+        let mut left = Vec::new();
+        for p in session.permissions() {
+            if p.kind != BlockKind::Permission || !slot.auto_seen.insert(p.request_id.clone()) {
+                continue;
+            }
+            let item = p.item_id.as_deref().and_then(|id| session.transcript().get(id));
+            let request = acc_core::policy::Request::new(item, p.detail.as_ref());
+            match crate::auto::concern(&request, &session.spec().cwd, &self.cfg.auto_approve) {
+                Some(why) => left.push(format!("auto-approve left to you: {why}")),
+                // Only an option marked allow-once; never "always", never a guess.
+                None => match acc_core::policy::option_for(acc_core::policy::Decision::Allow, &p.options) {
+                    Some(opt) => answers.push((p.request_id.clone(), opt.id.clone(), p.title.clone())),
+                    None => left.push(format!("auto-approve can't allow {}", p.title)),
+                },
+            }
+        }
+        let key = slot.key.clone();
+        for why in left {
+            self.toast(why, false);
+        }
+        let mut out = Vec::new();
+        for (request_id, option_id, title) in answers {
+            self.toast(format!("auto-approved: {title}"), false);
+            out.extend(self.send(
+                &key,
+                Command::AnswerPermission {
+                    request_id,
+                    option_id,
+                },
+            ));
         }
         out
     }

@@ -203,11 +203,12 @@ pub enum Action {
     Loadout,
     Merge,
     Discard,
+    AutoApprove,
     Jump(u8),
 }
 
 impl Action {
-    pub const ALL: [Action; 41] = [
+    pub const ALL: [Action; 42] = [
         Action::Quit,
         Action::Help,
         Action::SelectUp,
@@ -248,6 +249,7 @@ impl Action {
         Action::Loadout,
         Action::Merge,
         Action::Discard,
+        Action::AutoApprove,
         Action::Jump(0),
     ];
 
@@ -311,6 +313,7 @@ impl Action {
             Action::Loadout => "skills and MCP servers on the host",
             Action::Merge => "merge the session's worktree",
             Action::Discard => "discard the session's worktree",
+            Action::AutoApprove => "auto-approve what isn't dangerous, or stop",
             Action::Jump(_) => "jump to session 1-9, 0",
         }
     }
@@ -396,6 +399,7 @@ impl Default for Keymap {
             (Key::char('U'), Action::Usage),
             (Key::char('L'), Action::Loadout),
             (Key::char('M'), Action::Merge),
+            (Key::char('A'), Action::AutoApprove),
             (Key::char('h'), Action::FocusSidebar),
             (Key::char('l'), Action::FocusTranscript),
         ];
