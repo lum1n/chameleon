@@ -1731,6 +1731,29 @@ fn turning_auto_approve_on_answers_what_waits() {
 }
 
 #[test]
+fn auto_approve_answers_only_the_session_it_is_on_for() {
+    let mut a = app();
+    let (first, _) = claude_asking(&mut a, "touch acc-probe.txt");
+    a.set_entropy(|| [8; 15]);
+    let (second, _) = claude_asking(&mut a, "touch acc-probe.txt");
+    assert_ne!(first, second);
+    // The second is selected after its launch; turn it on there.
+    a.handle(press(KeyCode::Esc), 6);
+    let fx = a.handle(ch('A'), 6);
+    let allowed = written(&fx)
+        .iter()
+        .filter(|v| v.to_string().contains("\"behavior\":\"allow\""))
+        .count();
+    assert_eq!(allowed, 1, "{fx:?}");
+    let waiting = |a: &App, key: &SessionKey| {
+        let slot = a.slots().iter().find(|s| &s.key == key).unwrap();
+        (slot.auto_approve, slot.session.as_ref().unwrap().permissions().len())
+    };
+    assert_eq!(waiting(&a, &second), (true, 0));
+    assert_eq!(waiting(&a, &first), (false, 1), "the other session still asks");
+}
+
+#[test]
 fn usage_adds_up_and_is_saved_on_quit() {
     use chameleon_app::overlay::Overlay;
     let mut a = app();

@@ -86,9 +86,6 @@ pub struct App {
     pub(crate) usage_saved_ms: u64,
     /// The local time zone's offset from UTC, in minutes.
     pub(crate) utc_offset_min: i32,
-    /// Approvals that don't look dangerous are answered without asking
-    /// (see [`crate::auto`]).
-    pub(crate) auto_approve: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -168,7 +165,6 @@ impl App {
             })
             .collect();
         let sidebar_shown = cfg.general.show_sidebar;
-        let auto_approve = cfg.auto_approve.enabled;
         Self {
             cfg,
             theme,
@@ -197,7 +193,6 @@ impl App {
             usage_dirty: false,
             usage_saved_ms: 0,
             utc_offset_min: 0,
-            auto_approve,
         }
     }
 

@@ -26,9 +26,9 @@ pub struct Config {
     /// `command`). Deny wins; what no rule matches is left to you.
     #[serde(default)]
     pub policy: Vec<acc_core::policy::Rule>,
-    /// Allow every approval that doesn't look dangerous while it is on
-    /// (`A` toggles it; `[auto_approve]`: `enabled`, `ask_commands`,
-    /// `ask_paths`).
+    /// Allow every approval that doesn't look dangerous in the sessions it
+    /// is on for (`A` toggles it for the selected session; `[auto_approve]`:
+    /// `enabled`, `ask_commands`, `ask_paths`).
     #[serde(default)]
     pub auto_approve: crate::auto::AutoApproveConfig,
     /// Record the moments worth knowing about (an approval waiting, a turn

@@ -49,6 +49,16 @@ impl App {
         session.set_policy(self.policy());
         let key = SessionKey::new(host, &id);
         let mut slot = Slot::new(key.clone(), session.spec().clone());
+        // A replacement (a relaunch, a model change) keeps the session's
+        // auto-approval; a new session starts as the config says.
+        slot.auto_approve = replaces
+            .as_ref()
+            .and_then(|parent| {
+                self.slots
+                    .iter()
+                    .find(|s| s.key.host == *host && s.key.id == *parent)
+            })
+            .map_or(self.cfg.auto_approve.enabled, |s| s.auto_approve);
         slot.session = Some(session);
         slot.phase = Phase::Launching;
         slot.last_live_ms = self.now_ms;
@@ -689,29 +699,40 @@ impl App {
         out
     }
 
-    /// Turns auto-approval on or off; on, it answers what is waiting now.
+    /// Turns auto-approval on or off for the selected session only; on, it
+    /// answers what that session has waiting now.
     pub(crate) fn toggle_auto_approve(&mut self) -> Vec<Effect> {
-        self.auto_approve = !self.auto_approve;
-        if !self.auto_approve {
-            self.toast("auto-approve off", false);
+        let Some(i) = self
+            .selected
+            .as_ref()
+            .and_then(|k| self.slots.iter().position(|s| &s.key == k))
+        else {
+            self.toast("select a session to auto-approve", true);
+            return Vec::new();
+        };
+        let slot = &mut self.slots[i];
+        slot.auto_approve = !slot.auto_approve;
+        if !slot.auto_approve {
+            self.toast("auto-approve off for this session", false);
             return Vec::new();
         }
-        self.toast("auto-approve on: dangerous requests still ask", false);
-        for slot in &mut self.slots {
-            // Requests left to you before get another look.
-            slot.auto_seen.clear();
-        }
-        (0..self.slots.len()).flat_map(|i| self.auto_answer(i)).collect()
+        // Requests left to you before get another look.
+        slot.auto_seen.clear();
+        self.toast(
+            "auto-approve on for this session: dangerous requests still ask",
+            false,
+        );
+        self.auto_answer(i)
     }
 
     /// Allows the session's waiting approvals that don't look dangerous,
-    /// while auto-approval is on. Each request is looked at once; one left
-    /// to you says why in a toast. Questions are always left to you.
+    /// while its auto-approval is on. Each request is looked at once; one
+    /// left to you says why in a toast. Questions are always left to you.
     fn auto_answer(&mut self, i: usize) -> Vec<Effect> {
-        if !self.auto_approve {
+        let slot = &mut self.slots[i];
+        if !slot.auto_approve {
             return Vec::new();
         }
-        let slot = &mut self.slots[i];
         let Some(session) = &slot.session else {
             return Vec::new();
         };

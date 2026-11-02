@@ -21,7 +21,7 @@ pub fn build(app: &App, w: usize) -> Line {
 
     // Right: how many sessions are in each state, loudest first.
     let mut right = Line::default();
-    if app.auto_approve {
+    if app.selected().is_some_and(|s| s.auto_approve) {
         right.push(Span::new("auto ", Style::new().fg(t.permission).bold()));
     }
     let tally = |u: Urgency| app.slots.iter().filter(|s| s.urgency() == u).count();

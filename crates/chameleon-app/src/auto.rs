@@ -1,5 +1,5 @@
-//! Auto-approval, for harnesses without a mode that skips approvals: while
-//! it is on, chameleon allows what a harness asks for, unless the request
+//! Auto-approval, for harnesses without a mode that skips approvals: in a
+//! session it is on for, chameleon allows what the harness asks for, unless the request
 //! looks dangerous (deleting, escalating, pushing, or touching credentials
 //! and dotfiles outside the session's directory). Those, and requests too
 //! vague to judge, are left to you.
@@ -11,7 +11,9 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AutoApproveConfig {
-    /// Start with auto-approval on (`A` toggles it).
+    /// Turn auto-approval on for every session started from this
+    /// chameleon (`A` toggles it for the selected session). Sessions it
+    /// finds already running, its own or another client's, start off.
     #[serde(default)]
     pub enabled: bool,
     /// More commands to leave to you: a command's start, whole words

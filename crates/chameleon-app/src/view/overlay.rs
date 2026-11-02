@@ -109,10 +109,10 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
             let auto = &app.cfg.auto_approve;
             lines.push(Line::default());
             lines.push(Line::styled(
-                if app.auto_approve {
-                    "auto-approve: on (A turns it off)"
+                if app.selected().is_some_and(|s| s.auto_approve) {
+                    "auto-approve: on for this session (A turns it off)"
                 } else {
-                    "auto-approve: off (A turns it on)"
+                    "auto-approve: off for this session (A turns it on)"
                 },
                 accent.bold(),
             ));

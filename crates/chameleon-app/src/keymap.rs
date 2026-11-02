@@ -315,7 +315,7 @@ impl Action {
             Action::Loadout => "skills and MCP servers on the host",
             Action::Merge => "merge the session's worktree",
             Action::Discard => "discard the session's worktree",
-            Action::AutoApprove => "auto-approve what isn't dangerous, or stop",
+            Action::AutoApprove => "auto-approve what isn't dangerous in this session, or stop",
             Action::PasteImage => "attach the clipboard's image to the prompt",
             Action::Jump(_) => "jump to session 1-9, 0",
         }

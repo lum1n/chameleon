@@ -109,10 +109,11 @@ pub fn build(app: &App, rect: Rect) -> PaneView {
                 Span::new(format!(" {glyph} "), Style::new().fg(color).bold()),
             ]);
             let harness = slot.harness().program();
+            let auto = if slot.auto_approve { " auto" } else { "" };
             let right = if slot.attention {
-                format!(" {harness} •")
+                format!(" {harness}{auto} •")
             } else {
-                format!(" {harness}")
+                format!(" {harness}{auto}")
             };
             let used = 6 + width(&right) + 1;
             let title_w = w.saturating_sub(used);

@@ -136,6 +136,10 @@ pub struct Slot {
     /// What the latest turn changed, as the harness diffed it (Codex's
     /// `Event::TurnDiff`; shell commands' changes included).
     pub turn_diff: Option<Vec<FileDiff>>,
+    /// Approvals in this session that don't look dangerous are answered
+    /// without asking (see [`crate::auto`]). Only this session's: other
+    /// sessions, and other clients' sessions on the same host, still ask.
+    pub auto_approve: bool,
     /// Requests auto-approval has answered or left to you, by request id.
     pub auto_seen: HashSet<String>,
     /// The branch checked out in the session's directory, when it is in a
@@ -171,6 +175,7 @@ impl Slot {
             panels: HashMap::new(),
             plan: None,
             turn_diff: None,
+            auto_approve: false,
             auto_seen: HashSet::new(),
             branch: None,
             branch_asked_ms: None,
