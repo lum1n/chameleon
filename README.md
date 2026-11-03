@@ -27,6 +27,9 @@ quitting, several clients can attach to one session, and the phone app
  ⚠ approval Claude Code │ model opus · permission default │ ctx ▰▰▰▱▱▱ 42% · $0.31
 ```
 
+The header shows the session's directory with the branch checked out there (`~/proj ⎇ main`),
+or the worktree's branch for a worktree session.
+
 `b` folds the session list away so the transcript has the whole terminal; the header keeps a
 tally of every session's state (`⚠1 ⠋2 ·1`) so nothing gets lost while it's hidden.
 
@@ -87,8 +90,10 @@ session's jump key (`1`–`0`) stays the same until a session above it is delete
 
 ```toml
 [general]
+client_tag = "work"    # marks this client's requests; unique among clients on a session
 tick_ms = 250          # repaint cadence for spinners
 list_refresh_s = 20    # how often hosts are re-listed
+exec_timeout_s = 20    # give up on a script run on a host after this long
 auto_attach = true     # follow every alive session found on a host
 show_sidebar = true    # start with the session list open (b toggles it)
 sidebar_width = 34
