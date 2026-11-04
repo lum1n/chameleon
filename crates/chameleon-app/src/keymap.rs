@@ -181,6 +181,8 @@ pub enum Action {
     Back,
     Palette,
     NewSession,
+    NewFeature,
+    NewProject,
     Refresh,
     Kill,
     Remove,
@@ -209,7 +211,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 43] = [
+    pub const ALL: [Action; 45] = [
         Action::Quit,
         Action::Help,
         Action::SelectUp,
@@ -228,6 +230,8 @@ impl Action {
         Action::Back,
         Action::Palette,
         Action::NewSession,
+        Action::NewFeature,
+        Action::NewProject,
         Action::Refresh,
         Action::Kill,
         Action::Remove,
@@ -293,6 +297,8 @@ impl Action {
             Action::Back => "back / cancel / leave subagent",
             Action::Palette => "command palette",
             Action::NewSession => "new session",
+            Action::NewFeature => "new feature: plan first, then build",
+            Action::NewProject => "new project: a new folder, plan first, then build",
             Action::Refresh => "refresh sessions",
             Action::Kill => "stop the harness",
             Action::Remove => "remove the session",
@@ -382,6 +388,8 @@ impl Default for Keymap {
             (Key::new(Enter), Action::Open),
             (Key::char('/'), Action::Palette),
             (Key::char('n'), Action::NewSession),
+            (Key::char('F'), Action::NewFeature),
+            (Key::char('P'), Action::NewProject),
             (Key::char('r'), Action::Refresh),
             (Key::char('x'), Action::Kill),
             (Key::char('D'), Action::Remove),

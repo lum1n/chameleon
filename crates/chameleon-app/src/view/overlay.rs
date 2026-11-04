@@ -5,7 +5,10 @@ use acc_core::state::BlockKind;
 
 use crate::keymap::Action;
 use crate::model::App;
-use crate::overlay::{ConfirmAction, Overlay, Wizard, option_label, panel_actions, permission_modes, steps};
+use crate::overlay::{
+    BuilderForm, ConfirmAction, Overlay, Wizard, option_label, panel_actions, permission_modes, steps,
+};
+use crate::plan_flow::{self, Kind};
 use crate::style::{Line, Span, Style};
 use crate::view::spinner;
 use crate::view::transcript::{option_tone, request_preview};
@@ -192,6 +195,8 @@ pub fn build(app: &App, area: Rect) -> Option<OverlayView> {
         Overlay::Themes { selected, .. } => themes_view(app, *selected, area),
         Overlay::Agents { key, selected } => agents_view(app, key, *selected, area),
         Overlay::Launch(w) => launch_view(app, w, area),
+        Overlay::PlanReview { key, scroll } => plan_review_view(app, key, *scroll, area),
+        Overlay::PlanBuilder { key, form } => plan_builder_view(app, key, form, area),
         Overlay::Palette { query, selected } => {
             let rect = centered(area, 72, area.h.saturating_sub(4).clamp(6, 24));
             let inner = rect.inner();
@@ -1089,6 +1094,14 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
     };
 
     lines.extend(choices(
+        Wizard::KIND,
+        "start",
+        Kind::ALL
+            .iter()
+            .map(|k| (k.name().to_owned(), *k == w.kind))
+            .collect(),
+    ));
+    lines.extend(choices(
         Wizard::HOST,
         "host",
         app.hosts
@@ -1145,9 +1158,18 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
     }
     lines.push(Line::default());
 
-    let names = ["directory", "model", "permission"];
+    let project = w.kind == Kind::Project;
+    let names = [
+        if project { "parent" } else { "directory" },
+        "model",
+        "permission",
+    ];
     let placeholders = [
-        "~ is the home directory",
+        if project {
+            "where the project's folder goes; ~ is home"
+        } else {
+            "~ is the home directory"
+        },
         "the harness's default",
         "the harness's default",
     ];
@@ -1199,7 +1221,28 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
             ));
             lines.extend(wrap_hang(&m, width + PAD.len(), &hang));
         }
-        if field == Wizard::DIR {
+        if field == Wizard::DIR && project {
+            let focused = w.field == Wizard::NAME;
+            let name = &w.fields[4];
+            let shown = tail(name, value_w);
+            let mut l = padded(Line::new(label(Wizard::NAME, "name")));
+            if name.is_empty() && !focused {
+                l.push(Span::new(
+                    "the project's folder, made a git repository",
+                    muted.italic(),
+                ));
+            } else {
+                l.push(Span::raw(shown.clone()));
+            }
+            if focused {
+                cursor = Some((
+                    (PAD.len() + 2 + LABEL + crate::wrap::width(&shown)) as u16,
+                    lines.len() as u16,
+                ));
+            }
+            lines.push(l);
+        }
+        if field == Wizard::DIR && !project {
             lines.extend(choices(
                 Wizard::WORKTREE,
                 "worktree",
@@ -1208,6 +1251,8 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
                     ("its own, on a new branch".to_owned(), w.worktree),
                 ],
             ));
+        }
+        if field == Wizard::DIR {
             lines.extend(choices(
                 Wizard::SANDBOX,
                 "sandbox",
@@ -1271,11 +1316,32 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
             lines.extend(wrap_hang(&m, width + PAD.len(), &hang));
         }
     }
+    if w.kind != Kind::Blank {
+        lines.extend(choices(
+            Wizard::PLAN,
+            "plan first",
+            vec![
+                ("yes".to_owned(), w.plan_first),
+                ("no, build it".to_owned(), !w.plan_first),
+            ],
+        ));
+    }
     lines.push(Line::default());
 
     // The first prompt: a few wrapped lines behind a bar.
     let focused = w.field == Wizard::PROMPT;
-    lines.push(padded(Line::new(label(Wizard::PROMPT, "first prompt"))));
+    let prompt_label = match w.kind {
+        Kind::Blank => "first prompt",
+        Kind::Feature => "What do you want to build?",
+        Kind::Project => "What are you making?",
+    };
+    let mut l = padded(Line::new(label(Wizard::PROMPT, "")));
+    l.spans.pop();
+    l.push(Span::new(
+        prompt_label,
+        if focused { accent.bold() } else { muted },
+    ));
+    lines.push(l);
     let bar = Span::new(
         "┃ ",
         Style::new().fg(if focused { theme.accent } else { theme.border }),
@@ -1295,7 +1361,14 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
     for (r, row) in rows.into_iter().enumerate() {
         let mut l = padded(Line::new(vec![Span::raw("  "), bar.clone()]));
         if prompt.is_empty() {
-            l.push(Span::new("optional · alt-enter adds a line", muted.italic()));
+            l.push(Span::new(
+                if w.kind == Kind::Blank {
+                    "optional · alt-enter adds a line"
+                } else {
+                    "describe it · alt-enter adds a line"
+                },
+                muted.italic(),
+            ));
         } else {
             if focused && r == last {
                 // Wrapping trims trailing spaces; the cursor still steps over them.
@@ -1319,7 +1392,9 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
     let status = if let Some(e) = &w.error {
         Line::styled(format!("✖ {e}"), Style::new().fg(theme.error))
     } else if w.busy {
-        let what = if w.worktree {
+        let what = if project {
+            "making the project's folder"
+        } else if w.worktree {
             "making the worktree"
         } else {
             "checking the directory"
@@ -1332,16 +1407,26 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
             ""
         };
         let sandbox = if w.sandbox.is_some() { ", sandboxed" } else { "" };
-        Line::new(vec![
-            Span::new("⏵ ", accent),
-            Span::new(
+        let text = if w.plans() {
+            "The agent reads the code and writes a plan. Nothing changes until you approve it; \
+             the plan is saved in docs/plans."
+                .to_owned()
+        } else {
+            let place = if project {
                 format!(
-                    "starts {} on {host}{worktree}{sandbox}, detached; it keeps running if chameleon quits",
-                    w.harness.display_name()
-                ),
-                muted,
-            ),
-        ])
+                    " in a new git repository {}/{}",
+                    w.fields[0].trim_end_matches('/'),
+                    w.fields[4].trim()
+                )
+            } else {
+                String::new()
+            };
+            format!(
+                "starts {} on {host}{place}{worktree}{sandbox}, detached; it keeps running if chameleon quits",
+                w.harness.display_name()
+            )
+        };
+        Line::new(vec![Span::new("⏵ ", accent), Span::new(text, muted)])
     };
     lines.extend(wrap_hang(
         &padded(status),
@@ -1352,9 +1437,266 @@ fn launch_view(app: &App, w: &Wizard, area: Rect) -> OverlayView {
     let (rect, lines, cursor) = fit_content(rect, lines, cursor);
     OverlayView {
         rect,
-        title: "new session".into(),
+        title: match w.kind {
+            Kind::Blank => "new session".into(),
+            Kind::Feature => "new feature".into(),
+            Kind::Project => "new project".into(),
+        },
         lines,
         footer: Some(Line::styled(footer, muted)),
+        cursor,
+        tone: None,
+    }
+}
+
+/// The plan card's frame on the screen, and its text column's width.
+fn plan_review_rect(area: Rect) -> (Rect, usize) {
+    let rect = centered(area, 88, area.h.saturating_sub(2).max(10));
+    let w = (rect.inner().w as usize).saturating_sub(2 * PAD.len()).max(8);
+    (rect, w)
+}
+
+/// The plan card's lines above the plan's body, and the body.
+fn plan_review_lines(app: &App, key: &crate::slot::SessionKey, w: usize) -> Option<(Vec<Line>, Vec<Line>)> {
+    let theme = app.theme;
+    let muted = Style::new().fg(theme.muted);
+    let slot = app.slots.iter().find(|s| &s.key == key)?;
+    let review = plan_flow::review(slot)?;
+    let mut head = vec![Line::default()];
+    head.push(padded(Line::styled(
+        truncate(
+            &format!("{} · {}", slot.harness().display_name(), slot.title()),
+            w,
+        ),
+        muted,
+    )));
+    let path = plan_flow::plan_file(slot)
+        .map(|p| format!("saved to {p} when you build it"))
+        .unwrap_or_else(|| "saved to docs/plans when you build it".into());
+    head.push(padded(Line::styled(truncate(&path, w), muted.italic())));
+    head.push(Line::default());
+    let title = review.title();
+    let title = if title.is_empty() {
+        "the plan".to_owned()
+    } else {
+        title
+    };
+    for l in wrap_line(&Line::styled(title, Style::new().bold()), w, "") {
+        head.push(padded(l));
+    }
+    head.push(Line::default());
+    let md = crate::markdown::MdStyle {
+        base: Style::new().fg(theme.agent),
+        code: Style::new().fg(theme.tool),
+        heading: Style::new().bold().fg(theme.accent),
+        quote: Style::new().fg(theme.muted).italic(),
+        bullet: Style::new().fg(theme.accent),
+        muted,
+        link: Style::new().fg(theme.user).underline(),
+    };
+    let body = crate::markdown::render(&review.body(), &md, w)
+        .into_iter()
+        .map(padded)
+        .collect();
+    Some((head, body))
+}
+
+/// How far the plan card scrolls: its body less the rows it has.
+pub(crate) fn plan_review_max_scroll(app: &App, key: &crate::slot::SessionKey) -> usize {
+    let area = Rect::new(0, 0, app.size.0, app.size.1.saturating_sub(1));
+    let (rect, w) = plan_review_rect(area);
+    plan_review_lines(app, key, w).map_or(0, |(head, body)| {
+        let room = (rect.inner().h as usize).saturating_sub(head.len() + 1);
+        body.len().saturating_sub(room)
+    })
+}
+
+/// The plan an agent wrote, for approval.
+///
+/// ```text
+/// ╭ plan ready ────────────────────────────────────────╮
+/// │  Claude Code · add dark mode                       │
+/// │  saved to docs/plans/2026-11-04-add-dark-mode.md … │
+/// │                                                    │
+/// │  Add a dark mode                                   │
+/// │                                                    │
+/// │  The approach …                                    │
+/// ╰─── b build · r revise · w build with… · esc ───────╯
+/// ```
+fn plan_review_view(app: &App, key: &crate::slot::SessionKey, scroll: usize, area: Rect) -> OverlayView {
+    let muted = Style::new().fg(app.theme.muted);
+    let tone = app.theme.permission;
+    let (rect, w) = plan_review_rect(area);
+    let Some((mut lines, body)) = plan_review_lines(app, key, w) else {
+        return OverlayView {
+            rect: centered(area, 60, 5),
+            title: "plan".into(),
+            lines: vec![Line::default(), padded(Line::styled("already answered", muted))],
+            footer: Some(Line::styled("esc", muted)),
+            cursor: None,
+            tone: Some(tone),
+        };
+    };
+    let room = (rect.inner().h as usize).saturating_sub(lines.len() + 1).max(1);
+    let scroll = scroll.min(body.len().saturating_sub(room));
+    let more = body.len().saturating_sub(scroll + room);
+    lines.extend(body.into_iter().skip(scroll).take(room));
+    let mut footer = String::from("b build · r revise · w build with… · esc");
+    if scroll > 0 || more > 0 {
+        footer = format!("j/k scroll · {footer}");
+    }
+    let (rect, lines, _) = fit_content(rect, lines, None);
+    OverlayView {
+        rect,
+        title: if more > 0 {
+            format!("plan ready · {more} more lines")
+        } else {
+            "plan ready".into()
+        },
+        lines,
+        footer: Some(Line::styled(footer, muted)),
+        cursor: None,
+        tone: Some(tone),
+    }
+}
+
+/// Who builds the plan, when it isn't the planner.
+fn plan_builder_view(
+    app: &App,
+    key: &crate::slot::SessionKey,
+    form: &BuilderForm,
+    area: Rect,
+) -> OverlayView {
+    const LABEL: usize = 12;
+    let theme = app.theme;
+    let muted = Style::new().fg(theme.muted);
+    let accent = Style::new().fg(theme.accent);
+    let rect = centered(area, 76, area.h.saturating_sub(2));
+    let width = (rect.inner().w as usize)
+        .saturating_sub(2 * PAD.len())
+        .max(LABEL + 8);
+    let value_w = width.saturating_sub(2 + LABEL);
+    let efforts = app.harness_option(form.host, form.harness, acc_core::command::OptionId::Effort);
+    let models = app.harness_option(form.host, form.harness, acc_core::command::OptionId::Model);
+    let rows = form.rows(&efforts);
+    let label = |row: usize, name: &str| -> Vec<Span> {
+        if form.row == row {
+            vec![
+                Span::new("❯ ", accent.bold()),
+                Span::new(fit(name, LABEL), accent.bold()),
+            ]
+        } else {
+            vec![Span::raw("  "), Span::new(fit(name, LABEL), muted)]
+        }
+    };
+    let chip = |text: &str, chosen: bool, focused: bool| -> Span {
+        let text = format!(" {} ", text.replace(' ', "\u{a0}"));
+        match (chosen, focused) {
+            (true, true) => Span::new(text, accent.bold().reversed()),
+            (true, false) => Span::new(text, accent.bold()),
+            _ => Span::new(text, muted),
+        }
+    };
+    let hang = Line::raw(" ".repeat(PAD.len() + 2 + LABEL));
+    let mut lines = vec![Line::default()];
+    if let Some(s) = app.slots.iter().find(|s| &s.key == key) {
+        lines.push(padded(Line::styled(
+            truncate(
+                &format!("planned by {} · {}", s.harness().display_name(), s.title()),
+                width,
+            ),
+            muted,
+        )));
+        lines.push(Line::default());
+    }
+    let mut cursor = None;
+    let harnesses = app.wizard_harnesses(form.host);
+    let mut l = padded(Line::new(label(BuilderForm::AGENT, "agent")));
+    for h in &harnesses {
+        l.push(chip(
+            h.display_name(),
+            *h == form.harness,
+            form.row == BuilderForm::AGENT,
+        ));
+        l.push(Span::raw(" "));
+    }
+    lines.extend(wrap_hang(&l, width + PAD.len(), &hang));
+    let text_row =
+        |lines: &mut Vec<Line>, cursor: &mut Option<(u16, u16)>, row: usize, name: &str, value: &str| {
+            let shown = tail(value, value_w);
+            let mut l = padded(Line::new(label(row, name)));
+            if value.is_empty() && form.row != row {
+                l.push(Span::new("the harness's default", muted.italic()));
+            } else {
+                l.push(Span::raw(shown.clone()));
+            }
+            if form.row == row {
+                *cursor = Some((
+                    (PAD.len() + 2 + LABEL + crate::wrap::width(&shown)) as u16,
+                    lines.len() as u16,
+                ));
+            }
+            lines.push(l);
+        };
+    text_row(&mut lines, &mut cursor, BuilderForm::MODEL, "model", &form.model);
+    if form.row == BuilderForm::MODEL && !models.is_empty() {
+        let mut m = padded(Line::raw(" ".repeat(2 + LABEL)));
+        for model in models.iter().take(8) {
+            m.push(chip(model, model == form.model.trim(), false));
+            m.push(Span::raw(" "));
+        }
+        m.push(Span::new(" ctrl-h/l", muted));
+        lines.extend(wrap_hang(&m, width + PAD.len(), &hang));
+    }
+    if rows.contains(&BuilderForm::EFFORT) {
+        let mut l = padded(Line::new(label(BuilderForm::EFFORT, "effort")));
+        let focused = form.row == BuilderForm::EFFORT;
+        l.push(chip("default", form.effort.is_none(), focused));
+        l.push(Span::raw(" "));
+        for e in &efforts {
+            l.push(chip(e, form.effort.as_ref() == Some(e), focused));
+            l.push(Span::raw(" "));
+        }
+        lines.extend(wrap_hang(&l, width + PAD.len(), &hang));
+    }
+    text_row(
+        &mut lines,
+        &mut cursor,
+        BuilderForm::PERMISSION,
+        "permission",
+        &form.permission,
+    );
+    let modes = permission_modes(form.harness);
+    if form.row == BuilderForm::PERMISSION && !modes.is_empty() {
+        let mut m = padded(Line::raw(" ".repeat(2 + LABEL)));
+        for mode in modes {
+            m.push(chip(mode, form.permission == *mode, false));
+            m.push(Span::raw(" "));
+        }
+        m.push(Span::new(" ctrl-h/l", muted));
+        lines.extend(wrap_hang(&m, width + PAD.len(), &hang));
+    }
+    lines.push(Line::default());
+    lines.extend(wrap_hang(
+        &padded(Line::styled(
+            "A new session in the same directory, with the saved plan and none of the planning conversation.",
+            muted,
+        )),
+        width + PAD.len(),
+        &Line::raw(PAD),
+    ));
+    if form.row != BuilderForm::MODEL && form.row != BuilderForm::PERMISSION {
+        cursor = None;
+    }
+    let (rect, lines, cursor) = fit_content(rect, lines, cursor);
+    OverlayView {
+        rect,
+        title: "build with…".into(),
+        lines,
+        footer: Some(Line::styled(
+            "tab next · ctrl-h/l choose · enter build · esc back",
+            muted,
+        )),
         cursor,
         tone: None,
     }

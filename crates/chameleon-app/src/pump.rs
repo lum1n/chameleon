@@ -239,6 +239,8 @@ impl App {
         let tag = match tag {
             ExecTag::Merge(id) => return self.on_merge_done(&SessionKey::new(host, &id), result),
             ExecTag::Loadout(t) => return self.on_loadout_done(host, t, result),
+            ExecTag::CreateProject => return self.on_create_project(host, result),
+            ExecTag::SavePlan(saving) => return self.on_plan_saved(host, *saving, result),
             tag => tag,
         };
         let outcome = match result {
@@ -348,7 +350,11 @@ impl App {
                     }
                 }
             }
-            ExecTag::SpecWrite(_) | ExecTag::Merge(_) | ExecTag::Loadout(_) => Vec::new(),
+            ExecTag::SpecWrite(_)
+            | ExecTag::Merge(_)
+            | ExecTag::Loadout(_)
+            | ExecTag::CreateProject
+            | ExecTag::SavePlan(_) => Vec::new(),
             ExecTag::Watch(_) => {
                 if let Err(e) = outcome {
                     self.toast(format!("can't watch the session on {host}: {e}"), true);
@@ -684,6 +690,8 @@ impl App {
             self.show_panel(&key, &id);
         }
         let mut out = self.auto_answer(i);
+        out.extend(self.start_pending(i, false));
+        self.notice_plan(i);
         let waiting = self.slots[i]
             .session
             .as_ref()
@@ -741,8 +749,13 @@ impl App {
         }
         let mut answers = Vec::new();
         let mut left = Vec::new();
+        let plan_first = crate::plan_flow::plan_file(slot).is_some();
         for p in session.permissions() {
             if p.kind != BlockKind::Permission || !slot.auto_seen.insert(p.request_id.clone()) {
+                continue;
+            }
+            // A Plan First session's plan is yours to review.
+            if plan_first && crate::plan_flow::is_exit_plan_mode(p) {
                 continue;
             }
             let item = p.item_id.as_deref().and_then(|id| session.transcript().get(id));

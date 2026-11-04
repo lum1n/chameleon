@@ -147,6 +147,17 @@ pub struct Slot {
     pub branch: Option<String>,
     /// When the branch was last asked for.
     pub branch_asked_ms: Option<u64>,
+    /// A Plan First session on a harness that is told to plan once it
+    /// says what it can do: the description, and when to stop waiting
+    /// for its options and ask in words.
+    pub plan_start: Option<(String, u64)>,
+    /// Options to set once the session reports them (a builder's effort).
+    pub pending_options: Vec<(acc_core::command::OptionId, String)>,
+    /// The plan last shown for review (its request or item id), so it
+    /// opens once.
+    pub plan_seen: Option<String>,
+    /// The next message is feedback on the plan under review.
+    pub revising: bool,
 }
 
 impl Slot {
@@ -179,6 +190,10 @@ impl Slot {
             auto_seen: HashSet::new(),
             branch: None,
             branch_asked_ms: None,
+            plan_start: None,
+            pending_options: Vec::new(),
+            plan_seen: None,
+            revising: false,
         }
     }
 
