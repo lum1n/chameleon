@@ -39,6 +39,11 @@ pub struct Config {
     /// `workspace` or `read_only`, plus `write`, `hide` and
     /// `show_credentials`); the launch wizard can still turn it off.
     pub sandbox: Option<acc_core::sandbox::Sandbox>,
+    /// New Feature and New Project (`F`, `P`): `first` starts them Plan
+    /// First (default true); `projects_dir` is where new projects go
+    /// (default `~`).
+    #[serde(default)]
+    pub plan: PlanConfig,
     /// Themes from `themes/*.json` next to the config, loaded by the binary.
     #[serde(skip)]
     pub custom_themes: Vec<crate::themes::ThemeDef>,
@@ -139,6 +144,25 @@ impl Default for General {
             default_harness: None,
             blocks: Blocks::default(),
             nerd_font: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PlanConfig {
+    /// The agent writes a plan before it changes anything.
+    #[serde(default = "d_true")]
+    pub first: bool,
+    /// The folder new projects are made in.
+    pub projects_dir: Option<String>,
+}
+
+impl Default for PlanConfig {
+    fn default() -> Self {
+        Self {
+            first: true,
+            projects_dir: None,
         }
     }
 }

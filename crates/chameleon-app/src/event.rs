@@ -45,6 +45,10 @@ pub enum ExecTag {
     Discard(String),
     /// The branch checked out in a session's directory, by session.
     Branch(String),
+    /// Making the folder of a new project; stdout is its directory.
+    CreateProject,
+    /// Writing an approved plan into the repository.
+    SavePlan(Box<crate::plan_flow::Saving>),
     /// Skills and MCP servers on the host.
     Loadout(crate::loadout::LoadoutTag),
 }

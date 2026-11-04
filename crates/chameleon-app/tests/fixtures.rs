@@ -1747,7 +1747,10 @@ fn auto_approve_answers_only_the_session_it_is_on_for() {
     assert_eq!(allowed, 1, "{fx:?}");
     let waiting = |a: &App, key: &SessionKey| {
         let slot = a.slots().iter().find(|s| &s.key == key).unwrap();
-        (slot.auto_approve, slot.session.as_ref().unwrap().permissions().len())
+        (
+            slot.auto_approve,
+            slot.session.as_ref().unwrap().permissions().len(),
+        )
     };
     assert_eq!(waiting(&a, &second), (true, 0));
     assert_eq!(waiting(&a, &first), (false, 1), "the other session still asks");
@@ -2126,4 +2129,389 @@ fn ctrl_v_asks_for_the_clipboards_image() {
     let mut a = app();
     let fx = a.handle(AppEvent::Key(Key::ctrl(KeyCode::Char('v'))), 1);
     assert_eq!(fx, vec![Effect::PasteImage]);
+}
+
+// ---- Plan First ---------------------------------------------------------
+
+const PLAN_PATH: &str = "docs/plans/1970-01-01-add-a-dark-mode.md";
+const PLAN: &str = "Here it is.\n\n# Add a dark mode\n\n1. Read the theme\n2. Add the toggle";
+
+/// Starts a Plan First feature through `F` on the configured harness,
+/// with `description`, and returns its key once launched.
+fn plan_feature(a: &mut App, description: &str) -> (SessionKey, Vec<Effect>) {
+    use chameleon_app::overlay::{Overlay, Wizard};
+    use chameleon_app::plan_flow::Kind;
+    a.handle(ch('F'), 1);
+    let Some(Overlay::Launch(w)) = a.overlay() else {
+        panic!("expected the wizard, not {:?}", a.overlay());
+    };
+    assert_eq!(
+        (w.kind, w.plan_first, w.field),
+        (Kind::Feature, true, Wizard::PROMPT)
+    );
+    for c in description.chars() {
+        a.handle(ch(c), 1);
+    }
+    let fx = a.handle(AppEvent::Key(Key::ctrl(KeyCode::Enter)), 2);
+    let (host, _) = ran(&fx, |t| *t == ExecTag::ResolveDir).expect("resolves the directory");
+    let fx = a.handle(
+        AppEvent::ExecDone {
+            host: host.clone(),
+            tag: ExecTag::ResolveDir,
+            result: ok("/work\n"),
+        },
+        3,
+    );
+    let id = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::Run {
+                tag: ExecTag::Launch(id),
+                ..
+            } => Some(id.clone()),
+            _ => None,
+        })
+        .expect("launches");
+    let key = SessionKey::new(&host, &id);
+    let fx = a.handle(
+        AppEvent::ExecDone {
+            host,
+            tag: ExecTag::Launch(id),
+            result: ok("1\n"),
+        },
+        4,
+    );
+    (key, fx)
+}
+
+/// Claude asking to leave plan mode with `plan`.
+fn exit_plan_mode(plan: &str) -> String {
+    serde_json::json!({
+        "type": "control_request",
+        "request_id": "plan-1",
+        "request": {
+            "subtype": "can_use_tool",
+            "tool_name": "ExitPlanMode",
+            "display_name": "ExitPlanMode",
+            "input": {"plan": plan},
+            "tool_use_id": "toolu_plan",
+        },
+    })
+    .to_string()
+}
+
+/// A Claude Plan First session whose plan is up for review.
+fn claude_plan(a: &mut App) -> (SessionKey, Vec<Effect>) {
+    let (key, _) = plan_feature(a, "Add a dark mode");
+    feed(a, &key, CLAUDE_HI, 5);
+    let fx = feed_line(a, &key, &exit_plan_mode(PLAN), 6);
+    (key, fx)
+}
+
+fn save_plan_run(fx: &[Effect]) -> (String, acc_core::Exec, ExecTag) {
+    fx.iter()
+        .find_map(|e| match e {
+            Effect::Run {
+                host,
+                exec,
+                tag: tag @ ExecTag::SavePlan(_),
+                ..
+            } => Some((host.clone(), exec.clone(), tag.clone())),
+            _ => None,
+        })
+        .expect("saves the plan")
+}
+
+#[test]
+fn a_feature_starts_claude_in_plan_mode_with_the_plan_label() {
+    let mut a = app();
+    let (key, fx) = plan_feature(&mut a, "Add a dark mode");
+    let slot = a.slots().iter().find(|s| s.key == key).unwrap();
+    assert_eq!(slot.spec.permission.as_deref(), Some("plan"));
+    assert_eq!(
+        slot.spec
+            .labels
+            .get(chameleon_app::plan_flow::LABEL)
+            .map(String::as_str),
+        Some(PLAN_PATH)
+    );
+    let sent = written(&fx);
+    assert!(
+        sent.iter()
+            .any(|v| v["type"] == "user" && v.to_string().contains("Add a dark mode")),
+        "the description is the first prompt: {sent:?}"
+    );
+    assert!(slot.plan_start.is_none(), "Claude needs no second step");
+}
+
+#[test]
+fn a_feature_needs_a_description() {
+    use chameleon_app::overlay::Overlay;
+    let mut a = app();
+    a.handle(ch('F'), 1);
+    let fx = a.handle(AppEvent::Key(Key::ctrl(KeyCode::Enter)), 2);
+    assert!(ran(&fx, |_| true).is_none(), "{fx:?}");
+    let Some(Overlay::Launch(w)) = a.overlay() else {
+        panic!("expected the wizard");
+    };
+    assert_eq!(w.error.as_deref(), Some("say what you want to build"));
+}
+
+#[test]
+fn a_project_makes_its_folder_first_and_starts_in_it() {
+    use chameleon_app::overlay::{Overlay, Wizard};
+    let mut a = app_with("[plan]\nprojects_dir = \"~/code\"\n");
+    a.handle(ch('P'), 1);
+    let Some(Overlay::Launch(w)) = a.overlay() else {
+        panic!("expected the wizard");
+    };
+    assert_eq!((w.field, w.fields[0].as_str()), (Wizard::NAME, "~/code"));
+    assert!(!w.rows().contains(&Wizard::WORKTREE));
+    for c in "my app".chars() {
+        a.handle(ch(c), 1);
+    }
+    // Without a description it says so and goes there.
+    a.handle(AppEvent::Key(Key::ctrl(KeyCode::Enter)), 2);
+    let Some(Overlay::Launch(w)) = a.overlay() else {
+        panic!("expected the wizard");
+    };
+    assert_eq!(
+        (w.field, w.error.as_deref()),
+        (Wizard::PROMPT, Some("say what you are making"))
+    );
+    for c in "A todo app".chars() {
+        a.handle(ch(c), 2);
+    }
+    let fx = a.handle(AppEvent::Key(Key::ctrl(KeyCode::Enter)), 2);
+    let (host, script) = ran(&fx, |t| *t == ExecTag::CreateProject).expect("makes the folder");
+    assert!(script.starts_with("p=\"$HOME\"/code/'my app';"), "{script}");
+    assert!(script.contains("git init -q"), "{script}");
+
+    // A folder that is taken is an error on the wizard.
+    a.handle(
+        AppEvent::ExecDone {
+            host: host.clone(),
+            tag: ExecTag::CreateProject,
+            result: Ok(ExecOutput {
+                status: Some(9),
+                ..Default::default()
+            }),
+        },
+        3,
+    );
+    assert!(
+        overlay_text(&mut a)
+            .iter()
+            .any(|l| l.contains("the folder exists and isn't empty")),
+        "{:?}",
+        overlay_text(&mut a)
+    );
+    let fx = a.handle(AppEvent::Key(Key::ctrl(KeyCode::Enter)), 4);
+    assert!(ran(&fx, |t| *t == ExecTag::CreateProject).is_some());
+    let fx = a.handle(
+        AppEvent::ExecDone {
+            host,
+            tag: ExecTag::CreateProject,
+            result: ok("/h/code/my app\n"),
+        },
+        5,
+    );
+    assert!(ran(&fx, |t| matches!(t, ExecTag::Launch(_))).is_some(), "{fx:?}");
+    let slot = a.selected().unwrap();
+    assert_eq!(slot.spec.cwd, "/h/code/my app");
+    assert_eq!(slot.spec.permission.as_deref(), Some("plan"));
+    assert!(a.overlay().is_none());
+}
+
+#[test]
+fn another_harness_is_put_in_plan_mode_once_it_says_it_has_one() {
+    let mut a = app_with("[general]\ndefault_harness = \"codex\"\n");
+    let (key, fx) = plan_feature(&mut a, "Add a dark mode");
+    let slot = a.slots().iter().find(|s| s.key == key).unwrap();
+    assert_eq!(slot.harness(), Harness::Codex);
+    assert!(slot.plan_start.is_some(), "the description waits");
+    // The recording's ids are its own: answer this client's mode request.
+    let id = written(&fx)
+        .into_iter()
+        .find(|v| v["method"] == "collaborationMode/list")
+        .map(|v| v["id"].clone())
+        .expect("asks for the modes");
+    let modes = serde_json::json!({"id": id, "result": {"data": [
+        {"name": "Plan", "mode": "plan", "model": null, "reasoning_effort": "medium"},
+        {"name": "Default", "mode": "default", "model": null, "reasoning_effort": null},
+    ]}});
+    feed_line(&mut a, &key, &modes.to_string(), 5);
+    let fx = feed(&mut a, &key, CODEX_HANDSHAKE, 5);
+    let turn = written(&fx)
+        .into_iter()
+        .find(|v| v["method"] == "turn/start")
+        .expect("the planning turn starts");
+    let text = turn.to_string();
+    assert!(text.contains("Add a dark mode"), "{text}");
+    assert!(
+        !text.contains("Don't change any files"),
+        "plan mode does the asking: {text}"
+    );
+    assert_eq!(turn["params"]["collaborationMode"]["mode"], "plan", "{text}");
+    assert!(a.selected().unwrap().plan_start.is_none());
+}
+
+#[test]
+fn a_harness_that_never_says_is_asked_to_plan_in_words() {
+    let mut a = app_with("[general]\ndefault_harness = \"codex\"\n");
+    let (key, _) = plan_feature(&mut a, "Add a dark mode");
+    assert!(
+        a.handle(AppEvent::Tick, 10_000)
+            .iter()
+            .all(|e| !matches!(e, Effect::Input { .. }))
+    );
+    a.handle(AppEvent::Tick, 20_000);
+    let slot = a.slots().iter().find(|s| s.key == key).unwrap();
+    assert!(slot.plan_start.is_none(), "asked after the wait");
+    let snap = slot.session.as_ref().and_then(|s| s.snapshot()).unwrap();
+    assert!(snap.contains("Don't change any files yet."), "{snap}");
+}
+
+#[test]
+fn claudes_plan_opens_for_review_and_auto_approve_leaves_it() {
+    use chameleon_app::overlay::Overlay;
+    let mut a = app_with("[auto_approve]\nenabled = true\n");
+    let (key, fx) = claude_plan(&mut a);
+    assert!(
+        !written(&fx).iter().any(|v| v["type"] == "control_response"),
+        "{:?}",
+        written(&fx)
+    );
+    assert!(matches!(a.overlay(), Some(Overlay::PlanReview { key: k, .. }) if *k == key));
+    let text = overlay_text(&mut a).join("\n");
+    assert!(
+        text.contains("Add a dark mode") && text.contains("Read the theme"),
+        "{text}"
+    );
+    assert!(text.contains(PLAN_PATH), "{text}");
+    assert!(a.screen().header.text().contains("plan ready"));
+    // It opens once; enter on the session brings it back.
+    a.handle(press(KeyCode::Esc), 7);
+    feed_line(&mut a, &key, r#"{"type":"keep_alive"}"#, 7);
+    assert!(a.overlay().is_none());
+    a.handle(AppEvent::Key(Key::alt(KeyCode::Char('1'))), 8);
+    a.handle(press(KeyCode::Enter), 8);
+    assert!(matches!(a.overlay(), Some(Overlay::PlanReview { .. })));
+}
+
+#[test]
+fn build_saves_the_plan_then_approves_it_and_accepts_edits() {
+    let mut a = app();
+    let (key, _) = claude_plan(&mut a);
+    let fx = a.handle(ch('b'), 7);
+    assert!(a.overlay().is_none());
+    let (host, exec, tag) = save_plan_run(&fx);
+    assert_eq!(
+        exec.script,
+        format!("cd /work && mkdir -p docs/plans && cat > {PLAN_PATH}\n")
+    );
+    assert_eq!(String::from_utf8_lossy(&exec.stdin), format!("{PLAN}\n"));
+    let fx = a.handle(
+        AppEvent::ExecDone {
+            host,
+            tag,
+            result: ok(""),
+        },
+        8,
+    );
+    let sent = written(&fx);
+    let answer = sent
+        .iter()
+        .find(|v| v["type"] == "control_response")
+        .expect("answers the request");
+    assert_eq!(answer["response"]["request_id"], "plan-1", "{answer}");
+    assert_eq!(answer["response"]["response"]["behavior"], "allow", "{answer}");
+    assert!(
+        sent.iter().any(
+            |v| v["request"]["subtype"] == "set_permission_mode" && v["request"]["mode"] == "acceptEdits"
+        ),
+        "{sent:?}"
+    );
+    let _ = key;
+    assert!(toasts(&mut a).iter().any(|t| t == "telling Claude Code to build"));
+}
+
+#[test]
+fn revise_denies_the_plan_and_sends_the_feedback() {
+    let mut a = app();
+    let (key, _) = claude_plan(&mut a);
+    a.handle(ch('r'), 7);
+    assert!(a.overlay().is_none());
+    assert!(a.slots().iter().find(|s| s.key == key).unwrap().revising);
+    assert!(
+        a.screen()
+            .composer
+            .lines
+            .iter()
+            .any(|l| l.text().contains("what should change"))
+    );
+    for c in "use CSS variables".chars() {
+        a.handle(ch(c), 8);
+    }
+    let fx = a.handle(press(KeyCode::Enter), 9);
+    let sent = written(&fx);
+    let deny = sent
+        .iter()
+        .position(|v| v["type"] == "control_response" && v["response"]["response"]["behavior"] == "deny")
+        .unwrap_or_else(|| panic!("denies the plan: {sent:?}"));
+    let prompt = sent
+        .iter()
+        .position(|v| v["type"] == "user" && v.to_string().contains("use CSS variables"))
+        .unwrap_or_else(|| panic!("sends the feedback: {sent:?}"));
+    assert!(deny < prompt);
+    assert!(!a.slots().iter().find(|s| s.key == key).unwrap().revising);
+}
+
+#[test]
+fn build_with_starts_another_agent_on_the_saved_plan_and_stops_the_planner() {
+    use chameleon_app::overlay::Overlay;
+    let mut a = app();
+    let (planner, _) = claude_plan(&mut a);
+    a.handle(ch('w'), 7);
+    let Some(Overlay::PlanBuilder { form, .. }) = a.overlay() else {
+        panic!("expected the builder, not {:?}", a.overlay());
+    };
+    assert_eq!(
+        (form.harness, form.permission.as_str()),
+        (Harness::Claude, "acceptEdits")
+    );
+    for _ in 0..8 {
+        if matches!(a.overlay(), Some(Overlay::PlanBuilder { form, .. }) if form.harness == Harness::Codex) {
+            break;
+        }
+        a.handle(ch('l'), 7);
+    }
+    let text = overlay_text(&mut a).join("\n");
+    assert!(text.contains("the planning conversation"), "{text}");
+    let fx = a.handle(press(KeyCode::Enter), 8);
+    let (host, _, tag) = save_plan_run(&fx);
+    let fx = a.handle(
+        AppEvent::ExecDone {
+            host,
+            tag,
+            result: ok(""),
+        },
+        9,
+    );
+    assert!(ran(&fx, |t| matches!(t, ExecTag::Launch(_))).is_some(), "{fx:?}");
+    assert!(
+        ran(&fx, |t| *t == ExecTag::Kill(planner.id.clone())).is_some(),
+        "stops the planner: {fx:?}"
+    );
+    let new = a.selected().unwrap();
+    assert_eq!(new.harness(), Harness::Codex);
+    assert_eq!(new.spec.cwd, "/work");
+    assert_eq!(new.spec.parent.as_deref(), Some(planner.id.as_str()));
+    let snap = new.session.as_ref().and_then(|s| s.snapshot()).unwrap();
+    assert!(
+        snap.contains(&format!(
+            "The plan is approved and saved at {PLAN_PATH}. Implement it."
+        )),
+        "{snap}"
+    );
 }

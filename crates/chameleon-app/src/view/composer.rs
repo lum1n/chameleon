@@ -122,6 +122,7 @@ pub fn build(app: &App, rect: Rect) -> PaneView {
     }));
     if app.composer.is_empty() {
         let hint = match app.selected() {
+            Some(s) if s.revising => "say what should change in the plan · esc cancels",
             Some(s) if s.session.is_some() && s.is_alive() => {
                 if focused {
                     "say something · / commands"

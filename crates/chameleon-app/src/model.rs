@@ -448,6 +448,7 @@ impl App {
             }
         }
         out.extend(self.ask_branch(refresh_ms));
+        out.extend(self.plan_tick());
         for s in &mut self.slots {
             if let Some(at) = s.unfollow_at_ms
                 && now >= at
@@ -738,6 +739,14 @@ impl App {
                 _ => self.open_selected(),
             },
             Action::Back => {
+                if self.focus == Pane::Composer
+                    && let Some(s) = self.selected_slot_mut()
+                    && s.revising
+                {
+                    s.revising = false;
+                    self.toast("not revising the plan", false);
+                    return Vec::new();
+                }
                 if self.focus == Pane::Transcript && self.selected_slot_mut().is_some_and(Slot::close_agent) {
                     return Vec::new();
                 }
@@ -754,8 +763,13 @@ impl App {
                 self.overlay = Some(Overlay::palette());
                 Vec::new()
             }
-            Action::NewSession => {
-                let mut overlay = Overlay::launch(self);
+            Action::NewSession | Action::NewFeature | Action::NewProject => {
+                let kind = match action {
+                    Action::NewFeature => crate::plan_flow::Kind::Feature,
+                    Action::NewProject => crate::plan_flow::Kind::Project,
+                    _ => crate::plan_flow::Kind::Blank,
+                };
+                let mut overlay = Overlay::launch(self, kind);
                 let out = match &mut overlay {
                     Overlay::Launch(w) => self.wizard_list_dirs(w),
                     _ => Vec::new(),
@@ -1011,8 +1025,11 @@ impl App {
         match self.slots[i].phase {
             Phase::Listed => self.attach(i),
             Phase::Live => {
-                // A waiting request is what enter answers ("enter: answer").
-                if let Some(p) = self.slots[i]
+                // A waiting request is what enter answers ("enter: answer");
+                // a plan has its own card.
+                if self.plan_review(&key).is_some() {
+                    self.overlay = Some(Overlay::PlanReview { key, scroll: 0 });
+                } else if let Some(p) = self.slots[i]
                     .session
                     .as_ref()
                     .and_then(|s| s.permissions().first())
@@ -1042,6 +1059,10 @@ impl App {
             self.toast("the session isn't running; start a new one with ctrl-n", true);
             return Vec::new();
         }
+        let mut out = Vec::new();
+        if self.slot_mut(&key).is_some_and(|s| s.revising) {
+            out = self.revise_plan(&key);
+        }
         let text = self.composer.take();
         let images = self.composer.take_images();
         self.focus = Pane::Transcript;
@@ -1057,15 +1078,16 @@ impl App {
                 attachments,
             },
         ) {
-            Ok(out) => out,
-            Err(out) => {
+            Ok(fx) => out.extend(fx),
+            Err(fx) => {
                 // Refused (an agent that takes no images, say): keep it to
                 // edit, rather than lose the images.
                 self.composer.restore(&text, images);
                 self.focus = Pane::Composer;
-                out
+                out.extend(fx);
             }
         }
+        out
     }
 
     /// Images for the composer, read by the runtime; an overlay takes the

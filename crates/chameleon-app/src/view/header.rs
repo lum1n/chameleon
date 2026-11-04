@@ -21,6 +21,13 @@ pub fn build(app: &App, w: usize) -> Line {
 
     // Right: how many sessions are in each state, loudest first.
     let mut right = Line::default();
+    if let Some(s) = app.selected() {
+        if crate::plan_flow::review(s).is_some() {
+            right.push(Span::new("plan ready ", Style::new().fg(t.permission).bold()));
+        } else if crate::plan_flow::plan_file(s).is_some() && crate::plan_flow::is_planning(s) {
+            right.push(Span::new("planning ", Style::new().fg(t.thinking)));
+        }
+    }
     if app.selected().is_some_and(|s| s.auto_approve) {
         right.push(Span::new("auto ", Style::new().fg(t.permission).bold()));
     }

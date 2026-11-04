@@ -13,6 +13,7 @@ use acc_core::state::BlockKind;
 use crate::event::{Effect, ExecOutput, ExecTag, HostId};
 use crate::keymap::{Action, Key, KeyCode};
 use crate::model::App;
+use crate::plan_flow::{self, Kind};
 use crate::slot::SessionKey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,12 +28,19 @@ pub enum ConfirmAction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wizard {
+    /// A session, a feature or a project.
+    pub kind: Kind,
+    /// Features and projects start with a plan to approve.
+    pub plan_first: bool,
     pub host: usize,
     pub harness: Harness,
-    /// cwd, model, permission, prompt
-    pub fields: [String; 4],
-    /// The row with focus: [`Wizard::HOST`] to [`Wizard::PROMPT`].
+    /// cwd (a project's parent), model, permission, prompt, project name
+    pub fields: [String; 5],
+    /// The row with focus, one of [`Wizard::rows`].
     pub field: usize,
+    /// The directory of the kind not shown: a project's parent while
+    /// another kind is picked, the session's directory while a project is.
+    pub other_dir: String,
     /// Start the session in a git worktree of its own.
     pub worktree: bool,
     /// Confine the harness, and how much of the workspace it may change;
@@ -59,10 +67,67 @@ impl Wizard {
     pub const MODEL: usize = 5;
     pub const PERMISSION: usize = 6;
     pub const PROMPT: usize = 7;
-    pub const FIELDS: usize = 8;
+    pub const KIND: usize = 8;
+    pub const NAME: usize = 9;
+    pub const PLAN: usize = 10;
+    pub const FIELDS: usize = 11;
 
     /// The sandbox choices, in the order the row shows them.
     pub const SANDBOXES: [Option<Preset>; 3] = [None, Some(Preset::Workspace), Some(Preset::ReadOnly)];
+
+    /// The rows shown, top to bottom: a project has a name and no
+    /// worktree; only features and projects plan first.
+    pub fn rows(&self) -> Vec<usize> {
+        [
+            Self::KIND,
+            Self::HOST,
+            Self::HARNESS,
+            Self::DIR,
+            Self::NAME,
+            Self::WORKTREE,
+            Self::SANDBOX,
+            Self::MODEL,
+            Self::PERMISSION,
+            Self::PLAN,
+            Self::PROMPT,
+        ]
+        .into_iter()
+        .filter(|r| match *r {
+            Self::NAME => self.kind == Kind::Project,
+            Self::WORKTREE => self.kind != Kind::Project,
+            Self::PLAN => self.kind != Kind::Blank,
+            _ => true,
+        })
+        .collect()
+    }
+
+    /// Moves focus to the next (or previous) row shown.
+    fn step(&mut self, forward: bool) {
+        let rows = self.rows();
+        let n = rows.len();
+        let i = rows.iter().position(|r| *r == self.field).unwrap_or(0);
+        self.field = rows[if forward { (i + 1) % n } else { (i + n - 1) % n }];
+    }
+
+    /// Switches what the wizard starts: a project gets a parent directory
+    /// instead of the session's, and loses its worktree.
+    fn set_kind(&mut self, kind: Kind) {
+        if (kind == Kind::Project) != (self.kind == Kind::Project) {
+            std::mem::swap(&mut self.fields[0], &mut self.other_dir);
+        }
+        self.kind = kind;
+        if kind == Kind::Project {
+            self.worktree = false;
+        }
+        if !self.rows().contains(&self.field) {
+            self.field = Self::KIND;
+        }
+    }
+
+    /// Starts with a plan to approve.
+    pub fn plans(&self) -> bool {
+        self.plan_first && self.kind != Kind::Blank
+    }
 
     /// The index into `fields` of the row with focus, when it takes text.
     pub fn text_field(&self) -> Option<usize> {
@@ -71,6 +136,7 @@ impl Wizard {
             Self::MODEL => Some(1),
             Self::PERMISSION => Some(2),
             Self::PROMPT => Some(3),
+            Self::NAME => Some(4),
             _ => None,
         }
     }
@@ -173,6 +239,61 @@ fn list_dirs_script(dir: &str) -> String {
     )
 }
 
+/// The "build with…" form: the harness, model, effort and permission of
+/// the agent that builds a plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuilderForm {
+    /// The row with focus, one of [`BuilderForm::rows`].
+    pub row: usize,
+    /// The planner's host, by index.
+    pub host: usize,
+    pub harness: Harness,
+    pub model: String,
+    /// `None`: the harness's default.
+    pub effort: Option<String>,
+    pub permission: String,
+}
+
+impl BuilderForm {
+    pub const AGENT: usize = 0;
+    pub const MODEL: usize = 1;
+    pub const EFFORT: usize = 2;
+    pub const PERMISSION: usize = 3;
+
+    /// The rows shown: effort only where the harness has said its levels.
+    pub fn rows(&self, efforts: &[String]) -> Vec<usize> {
+        [Self::AGENT, Self::MODEL, Self::EFFORT, Self::PERMISSION]
+            .into_iter()
+            .filter(|r| *r != Self::EFFORT || !efforts.is_empty())
+            .collect()
+    }
+
+    /// The permission a builder on `h` starts with: what plans are built in.
+    pub fn default_permission(h: Harness) -> String {
+        plan_flow::build_value(permission_modes(h))
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    fn text(&mut self) -> Option<&mut String> {
+        match self.row {
+            Self::MODEL => Some(&mut self.model),
+            Self::PERMISSION => Some(&mut self.permission),
+            _ => None,
+        }
+    }
+
+    pub fn builder(&self) -> plan_flow::Builder {
+        let opt = |s: &str| Some(s.trim().to_owned()).filter(|s| !s.is_empty());
+        plan_flow::Builder {
+            harness: self.harness,
+            model: opt(&self.model),
+            effort: self.effort.clone(),
+            permission: opt(&self.permission),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaletteKind {
     Command(String),
@@ -253,6 +374,16 @@ pub enum Overlay {
     /// What sessions spent, per account and per day.
     Usage {
         scroll: usize,
+    },
+    /// A plan waiting for approval, read from the session on every frame.
+    PlanReview {
+        key: SessionKey,
+        scroll: usize,
+    },
+    /// Picks the fresh agent that builds an approved plan.
+    PlanBuilder {
+        key: SessionKey,
+        form: BuilderForm,
     },
     /// The theme picker; moving previews, esc puts `original` back.
     Themes {
@@ -345,7 +476,7 @@ impl Overlay {
         }
     }
 
-    pub fn launch(app: &App) -> Self {
+    pub fn launch(app: &App, kind: Kind) -> Self {
         let host = app
             .selected()
             .and_then(|s| app.hosts.iter().position(|h| h.cfg.name == s.key.host))
@@ -383,11 +514,24 @@ impl Overlay {
                     "~".into()
                 }
             });
+        let projects = app.cfg.plan.projects_dir.clone().unwrap_or_else(|| "~".into());
+        let (dir, other_dir) = if kind == Kind::Project {
+            (projects, cwd)
+        } else {
+            (cwd, projects)
+        };
         Overlay::Launch(Wizard {
+            kind,
+            plan_first: app.cfg.plan.first,
             host,
             harness,
-            fields: [cwd, String::new(), String::new(), String::new()],
-            field: Wizard::DIR,
+            fields: [dir, String::new(), String::new(), String::new(), String::new()],
+            field: match kind {
+                Kind::Blank => Wizard::DIR,
+                Kind::Feature => Wizard::PROMPT,
+                Kind::Project => Wizard::NAME,
+            },
+            other_dir,
             worktree: false,
             sandbox: app.cfg.sandbox.as_ref().map(|s| s.preset),
             busy: false,
@@ -410,6 +554,11 @@ impl Overlay {
             Overlay::Palette { query, .. } => query.push_str(text),
             Overlay::Permission { text: t, .. } => t.push_str(text),
             Overlay::Panel { input: Some(t), .. } => t.push_str(text),
+            Overlay::PlanBuilder { form, .. } => {
+                if let Some(t) = form.text() {
+                    t.push_str(text);
+                }
+            }
             _ => {}
         }
     }
@@ -780,10 +929,8 @@ impl App {
                         KeyCode::Enter if w.field == Wizard::DIR && w.pick.is_some() => {
                             w.complete_dir();
                         }
-                        KeyCode::Tab | KeyCode::Down => w.field = (w.field + 1) % Wizard::FIELDS,
-                        KeyCode::BackTab | KeyCode::Up => {
-                            w.field = (w.field + Wizard::FIELDS - 1) % Wizard::FIELDS
-                        }
+                        KeyCode::Tab | KeyCode::Down => w.step(true),
+                        KeyCode::BackTab | KeyCode::Up => w.step(false),
                         KeyCode::Enter if key.ctrl || w.field == Wizard::PROMPT => {
                             if key.alt || key.shift {
                                 w.fields[3].push('\n');
@@ -791,7 +938,20 @@ impl App {
                                 out = self.wizard_submit(w);
                             }
                         }
-                        KeyCode::Enter => w.field = (w.field + 1) % Wizard::FIELDS,
+                        KeyCode::Enter => w.step(true),
+                        KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if w.field == Wizard::KIND => {
+                            let all = Kind::ALL;
+                            let i = all.iter().position(|k| *k == w.kind).unwrap_or(0);
+                            let j = if key.code == KeyCode::Left {
+                                i + all.len() - 1
+                            } else {
+                                i + 1
+                            };
+                            w.set_kind(all[j % all.len()]);
+                        }
+                        KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if w.field == Wizard::PLAN => {
+                            w.plan_first = !w.plan_first
+                        }
                         KeyCode::Left | KeyCode::Right if w.field == Wizard::HOST => {
                             let n = self.hosts.len().max(1);
                             w.host = if key.code == KeyCode::Right {
@@ -1157,6 +1317,131 @@ impl App {
                 KeyCode::Char('g') | KeyCode::Home => *scroll = 0,
                 _ => {}
             },
+            Overlay::PlanReview { key: skey, scroll } => {
+                let skey = skey.clone();
+                if self.plan_review(&skey).is_none() {
+                    self.toast("the plan was already answered", false);
+                    return Vec::new();
+                }
+                let max = crate::view::overlay::plan_review_max_scroll(self, &skey);
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => keep = false,
+                    KeyCode::Char('j') | KeyCode::Down => *scroll += 1,
+                    KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
+                    KeyCode::Char(' ') | KeyCode::PageDown => *scroll += 10,
+                    KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                    KeyCode::Char('g') | KeyCode::Home => *scroll = 0,
+                    KeyCode::Char('G') | KeyCode::End => *scroll = max,
+                    KeyCode::Char('b') | KeyCode::Enter => {
+                        keep = false;
+                        out = self.save_plan(&skey, plan_flow::Then::Build);
+                    }
+                    KeyCode::Char('r') => {
+                        keep = false;
+                        if let Some(s) = self.slot_mut(&skey) {
+                            s.revising = true;
+                        }
+                        self.focus = crate::model::Pane::Composer;
+                    }
+                    KeyCode::Char('w') => {
+                        keep = false;
+                        self.overlay = self.plan_builder(&skey);
+                    }
+                    _ => {}
+                }
+                *scroll = (*scroll).min(max);
+            }
+            Overlay::PlanBuilder { key: skey, form } => {
+                let efforts = self.harness_option(form.host, form.harness, OptionId::Effort);
+                let rows = form.rows(&efforts);
+                let typing = form.text().is_some();
+                // Rows of choices take no text: hjkl move there.
+                let key = if !typing && !key.ctrl && !key.alt {
+                    match key.code {
+                        KeyCode::Char('j') => Key::new(KeyCode::Down),
+                        KeyCode::Char('k') => Key::new(KeyCode::Up),
+                        KeyCode::Char('h') => Key::new(KeyCode::Left),
+                        KeyCode::Char('l') | KeyCode::Char(' ') => Key::new(KeyCode::Right),
+                        _ => key,
+                    }
+                } else {
+                    key
+                };
+                let at = rows.iter().position(|r| *r == form.row).unwrap_or(0);
+                let n = rows.len();
+                let forward = key.code == KeyCode::Right;
+                match key.code {
+                    KeyCode::Esc => {
+                        keep = false;
+                        self.overlay = Some(Overlay::PlanReview {
+                            key: skey.clone(),
+                            scroll: 0,
+                        });
+                    }
+                    KeyCode::Down | KeyCode::Tab => form.row = rows[(at + 1) % n],
+                    KeyCode::Up | KeyCode::BackTab => form.row = rows[(at + n - 1) % n],
+                    KeyCode::Enter => {
+                        keep = false;
+                        let then = plan_flow::Then::BuildWith(form.builder());
+                        let skey = skey.clone();
+                        out = self.save_plan(&skey, then);
+                    }
+                    KeyCode::Left | KeyCode::Right if form.row == BuilderForm::AGENT => {
+                        let list = self.wizard_harnesses(form.host);
+                        if let Some(h) = cycle(
+                            &list.iter().map(|h| h.id()).collect::<Vec<_>>(),
+                            form.harness.id(),
+                            forward,
+                        )
+                        .and_then(|id| list.iter().find(|h| h.id() == *id))
+                        {
+                            let models = self.harness_option(form.host, *h, OptionId::Model);
+                            if !models.iter().any(|m| *m == form.model.trim()) {
+                                form.model.clear();
+                            }
+                            form.harness = *h;
+                            form.effort = None;
+                            form.permission = BuilderForm::default_permission(*h);
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Right if form.row == BuilderForm::MODEL => {
+                        let models = self.harness_option(form.host, form.harness, OptionId::Model);
+                        if let Some(m) = cycle(&models, &form.model, forward) {
+                            form.model = m.clone();
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Right if form.row == BuilderForm::EFFORT => {
+                        // The harness's default comes first.
+                        let mut all = vec![String::new()];
+                        all.extend(efforts.iter().cloned());
+                        let now = form.effort.clone().unwrap_or_default();
+                        if let Some(e) = cycle(&all, &now, forward) {
+                            form.effort = Some(e.clone()).filter(|e| !e.is_empty());
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Right if form.row == BuilderForm::PERMISSION => {
+                        if let Some(m) = cycle(permission_modes(form.harness), &form.permission, forward) {
+                            form.permission = (*m).to_owned();
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        if let Some(t) = form.text() {
+                            t.pop();
+                        }
+                    }
+                    KeyCode::Char('u') if key.ctrl => {
+                        if let Some(t) = form.text() {
+                            t.clear();
+                        }
+                    }
+                    KeyCode::Char(c) if !key.ctrl && !key.alt => {
+                        if let Some(t) = form.text() {
+                            t.push(c);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             Overlay::Diff(view) => {
                 let (k, fx) = self.diff_key(view, key);
                 keep = k;
@@ -1234,16 +1519,23 @@ impl App {
     /// session's first. acc learns them from a running harness, so this is
     /// empty until one has run there.
     pub(crate) fn wizard_models(&self, host: usize, harness: Harness) -> Vec<String> {
+        self.harness_option(host, harness, OptionId::Model)
+    }
+
+    /// The values of option `id` that `harness` reported in a session on
+    /// the host, the selected session's first, then the newest's.
+    pub(crate) fn harness_option(&self, host: usize, harness: Harness, id: OptionId) -> Vec<String> {
         let Some(name) = self.hosts.get(host).map(|h| h.cfg.name.as_str()) else {
             return Vec::new();
         };
-        let selected = self.selected();
-        selected
+        let mut others: Vec<&crate::slot::Slot> = self.slots.iter().collect();
+        others.sort_by_key(|s| std::cmp::Reverse(s.spec.created_ms));
+        self.selected()
             .into_iter()
-            .chain(&self.slots)
+            .chain(others)
             .filter(|s| s.key.host == name && s.harness() == harness)
             .filter_map(|s| s.session.as_ref())
-            .filter_map(|s| s.options().iter().find(|o| o.id == OptionId::Model))
+            .filter_map(|s| s.options().iter().find(|o| o.id == id))
             .map(|o| o.values.clone())
             .find(|v| !v.is_empty())
             .unwrap_or_default()
@@ -1307,8 +1599,26 @@ impl App {
         };
         let cwd = w.fields[0].trim();
         let cwd = if cwd.is_empty() { "~" } else { cwd };
-        w.busy = true;
         w.error = None;
+        if w.kind != Kind::Blank && w.fields[3].trim().is_empty() {
+            w.error = Some(match w.kind {
+                Kind::Project => "say what you are making".into(),
+                _ => "say what you want to build".into(),
+            });
+            w.field = Wizard::PROMPT;
+            return Vec::new();
+        }
+        if w.kind == Kind::Project {
+            if !plan_flow::valid_project_name(&w.fields[4]) {
+                w.error = Some("name the project's folder".into());
+                w.field = Wizard::NAME;
+                return Vec::new();
+            }
+            w.busy = true;
+            let exec = acc_core::Exec::new(plan_flow::create_project_script(cwd, &w.fields[4]));
+            return vec![self.run(&host, exec, ExecTag::CreateProject)];
+        }
+        w.busy = true;
         vec![self.run(
             &host,
             acc_core::Exec::new(acc_core::session::resolve_dir_script(cwd)),
@@ -1342,9 +1652,8 @@ impl App {
                     self.overlay = Some(Overlay::Launch(w));
                     return vec![self.run(host, exec, ExecTag::AddWorktree(id))];
                 }
-                let req = wizard_request(&w, cwd, None, self.cfg.sandbox.as_ref());
-                self.focus = crate::model::Pane::Composer;
-                self.launch(host, req)
+                let id = new_session_id(w.harness, &(self.entropy)());
+                self.wizard_launch(host, &w, cwd, id, false)
             }
             Err(e) => {
                 w.error = Some(format!("no such directory: {e}"));
@@ -1366,11 +1675,7 @@ impl App {
         };
         w.busy = false;
         match outcome.map(|o| o.stdout_text().trim().to_owned()) {
-            Ok(cwd) if !cwd.is_empty() => {
-                let req = wizard_request(&w, cwd, Some(id.to_owned()), self.cfg.sandbox.as_ref());
-                self.focus = crate::model::Pane::Composer;
-                self.launch_as(host, req, id.to_owned())
-            }
+            Ok(cwd) if !cwd.is_empty() => self.wizard_launch(host, &w, cwd, id.to_owned(), true),
             Ok(_) => {
                 w.error = Some("the worktree has no directory".into());
                 self.overlay = Some(Overlay::Launch(w));
@@ -1379,6 +1684,70 @@ impl App {
             Err(e) => {
                 w.error = Some(format!("no worktree: {}", e.trim_start_matches("acc: ")));
                 self.overlay = Some(Overlay::Launch(w));
+                Vec::new()
+            }
+        }
+    }
+
+    /// Starts what the wizard describes in `cwd`, as session `id`; a
+    /// Plan First launch on a harness that isn't Claude is told to plan
+    /// once it says what it can do.
+    fn wizard_launch(
+        &mut self,
+        host: &HostId,
+        w: &Wizard,
+        cwd: String,
+        id: String,
+        worktree: bool,
+    ) -> Vec<Effect> {
+        let plan = w
+            .plans()
+            .then(|| plan_flow::plan_path(&w.fields[3], self.now_ms, self.utc_offset_min));
+        let req = wizard_request(
+            w,
+            cwd,
+            worktree.then(|| id.clone()),
+            self.cfg.sandbox.as_ref(),
+            plan,
+        );
+        let deferred = w.plans() && w.harness != Harness::Claude;
+        self.focus = crate::model::Pane::Composer;
+        let out = self.launch_as(host, req, id.clone());
+        let deadline = self.now_ms + PLAN_START_WAIT_MS;
+        if deferred && let Some(s) = self.slot_mut(&SessionKey::new(host, &id)) {
+            s.plan_start = Some((w.fields[3].trim().to_owned(), deadline));
+        }
+        out
+    }
+
+    /// The folder of a new project is made (stdout is its directory), or
+    /// it was taken.
+    pub(crate) fn on_create_project(
+        &mut self,
+        host: &HostId,
+        result: Result<ExecOutput, String>,
+    ) -> Vec<Effect> {
+        let Some(Overlay::Launch(w)) = &mut self.overlay else {
+            return Vec::new();
+        };
+        match result {
+            Ok(o) if o.ok() => self.on_resolve_dir(host, Ok(o)),
+            Ok(o) => {
+                w.busy = false;
+                w.error = Some(if o.status == Some(plan_flow::EXIT_TAKEN) {
+                    "the folder exists and isn't empty".into()
+                } else {
+                    let err = o.stderr_text();
+                    format!(
+                        "can't make the project: {}",
+                        err.lines().last().unwrap_or("exit status")
+                    )
+                });
+                Vec::new()
+            }
+            Err(e) => {
+                w.busy = false;
+                w.error = Some(format!("can't make the project: {e}"));
                 Vec::new()
             }
         }
@@ -1398,14 +1767,20 @@ impl App {
 
 /// What the wizard starts, in `cwd` (resolved on the host). A sandbox
 /// takes its extra paths from the config's `[sandbox]`.
+///
+/// With `plan` (where the plan will be saved), the session is labelled
+/// Plan First: Claude starts in its plan mode with the description as the
+/// first prompt; other harnesses get theirs once they report their
+/// options (see [`crate::slot::Slot::plan_start`]).
 fn wizard_request(
     w: &Wizard,
     cwd: String,
     worktree: Option<String>,
     configured: Option<&Sandbox>,
+    plan: Option<String>,
 ) -> LaunchRequest {
     let opt = |s: &String| Some(s.trim().to_owned()).filter(|s| !s.is_empty());
-    LaunchRequest {
+    let mut req = LaunchRequest {
         harness: Some(w.harness),
         cwd,
         model: opt(&w.fields[1]),
@@ -1418,8 +1793,21 @@ fn wizard_request(
             ..configured.cloned().unwrap_or_default()
         }),
         ..LaunchRequest::default()
+    };
+    if let Some(path) = plan {
+        req.labels.insert(plan_flow::LABEL.to_owned(), path);
+        if w.harness == Harness::Claude {
+            req.permission = Some("plan".into());
+        } else {
+            req.prompt = None;
+        }
     }
+    req
 }
+
+/// How long a Plan First session waits for its harness's options before
+/// it is asked to plan in words.
+pub(crate) const PLAN_START_WAIT_MS: u64 = 15_000;
 
 impl App {
     fn command_entry(&self, key: &SessionKey, name: &str) -> Option<CommandEntry> {
