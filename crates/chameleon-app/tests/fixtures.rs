@@ -1747,7 +1747,10 @@ fn auto_approve_answers_only_the_session_it_is_on_for() {
     assert_eq!(allowed, 1, "{fx:?}");
     let waiting = |a: &App, key: &SessionKey| {
         let slot = a.slots().iter().find(|s| &s.key == key).unwrap();
-        (slot.auto_approve, slot.session.as_ref().unwrap().permissions().len())
+        (
+            slot.auto_approve,
+            slot.session.as_ref().unwrap().permissions().len(),
+        )
     };
     assert_eq!(waiting(&a, &second), (true, 0));
     assert_eq!(waiting(&a, &first), (false, 1), "the other session still asks");

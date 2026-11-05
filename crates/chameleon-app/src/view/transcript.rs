@@ -487,9 +487,14 @@ fn is_step(item: &Item) -> bool {
 }
 
 /// Not part of the conversation shown: `scope` is the open subagent's id,
-/// `None` for the main conversation.
+/// `None` for the main conversation. Finished reasoning with no text is
+/// left out too: Claude can send a thinking block that holds only a
+/// signature, which would show as an empty "thinking" line.
 pub(crate) fn hidden(item: &Item, scope: Option<&str>) -> bool {
     item.parent.as_deref() != scope
+        || (item.kind == ItemKind::Reasoning
+            && item.status != ItemStatus::Running
+            && item.text.trim().is_empty())
 }
 
 /// The next item of the conversation shown, for gap and layout decisions.
@@ -1030,4 +1035,38 @@ pub fn hunks(f: &FileDiff, theme: &Theme) -> Vec<Line> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acc_core::item::ItemDetail;
+
+    fn item(kind: ItemKind, status: ItemStatus, text: &str) -> Item {
+        Item {
+            id: "i".into(),
+            kind,
+            status,
+            text: text.into(),
+            detail: ItemDetail::Text,
+            native: serde_json::Value::Null,
+            parent: None,
+            seq: 0,
+        }
+    }
+
+    #[test]
+    fn hides_finished_blank_reasoning() {
+        use ItemKind::Reasoning;
+        assert!(hidden(&item(Reasoning, ItemStatus::Completed, " \n"), None));
+        assert!(!hidden(&item(Reasoning, ItemStatus::Completed, "hmm"), None));
+        assert!(
+            !hidden(&item(Reasoning, ItemStatus::Running, ""), None),
+            "still streaming"
+        );
+        assert!(!hidden(
+            &item(ItemKind::AgentMessage, ItemStatus::Completed, ""),
+            None
+        ));
+    }
 }
