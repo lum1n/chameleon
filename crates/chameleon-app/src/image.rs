@@ -198,4 +198,40 @@ mod tests {
         assert_eq!(p("'/tmp/a.png"), None);
         assert_eq!(p(""), None);
     }
+
+    #[test]
+    fn refuses_images_over_the_limit() {
+        let mut big = b"\x89PNG\r\n\x1a\n".to_vec();
+        big.resize(Attachment::MAX_BYTES + 1, 0);
+        let err = Image::from_bytes("big.png", &big).unwrap_err();
+        assert!(err.starts_with("big.png is "), "{err}");
+        assert!(err.contains("the limit is"), "{err}");
+        big.truncate(Attachment::MAX_BYTES);
+        assert!(Image::from_bytes("big.png", &big).is_ok());
+    }
+
+    #[test]
+    fn sizes_are_rounded_up_to_kb_then_shown_in_mb() {
+        assert_eq!(size(1), "1 KB");
+        assert_eq!(size(1024), "1 KB");
+        assert_eq!(size(1025), "2 KB");
+        assert_eq!(size(1 << 20), "1.0 MB");
+        assert_eq!(size(3 << 19), "1.5 MB");
+    }
+
+    #[test]
+    fn percent_decoding_leaves_bad_escapes_alone() {
+        assert_eq!(percent_decode("a%20b"), "a b");
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("%zz.png"), "%zz.png");
+        assert_eq!(percent_decode("%4"), "%4");
+        assert_eq!(percent_decode("%C3%A5"), "å");
+    }
+
+    #[test]
+    fn webp_needs_the_whole_header() {
+        assert_eq!(sniff(b"RIFF\0\0\0\0WEB"), None);
+        assert_eq!(sniff(b"RIFF\0\0\0\0WAVE"), None);
+        assert_eq!(sniff(b""), None);
+    }
 }
