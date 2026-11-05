@@ -2437,6 +2437,38 @@ fn build_saves_the_plan_then_approves_it_and_accepts_edits() {
 }
 
 #[test]
+fn a_plan_that_cant_be_saved_isnt_built() {
+    let mut a = app();
+    let (key, _) = claude_plan(&mut a);
+    let fx = a.handle(ch('b'), 7);
+    let (host, _, tag) = save_plan_run(&fx);
+    let fx = a.handle(
+        AppEvent::ExecDone {
+            host,
+            tag,
+            result: Ok(ExecOutput {
+                status: Some(1),
+                stderr: b"warning\ncat: permission denied\n".to_vec(),
+                ..Default::default()
+            }),
+        },
+        8,
+    );
+    assert!(
+        !written(&fx).iter().any(|v| v["type"] == "control_response"),
+        "nothing is approved: {:?}",
+        written(&fx)
+    );
+    let t = toasts(&mut a);
+    assert!(
+        t.iter()
+            .any(|t| t == "can't save the plan: cat: permission denied"),
+        "{t:?}"
+    );
+    assert!(a.slots().iter().any(|s| s.key == key));
+}
+
+#[test]
 fn revise_denies_the_plan_and_sends_the_feedback() {
     let mut a = app();
     let (key, _) = claude_plan(&mut a);
