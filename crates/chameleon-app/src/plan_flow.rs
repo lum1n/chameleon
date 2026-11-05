@@ -340,7 +340,11 @@ fn shell_dir(dir: &str) -> String {
 /// Makes folder `name` in `parent` a new git repository and prints its
 /// resolved path; exits [`EXIT_TAKEN`] when the folder exists and isn't empty.
 pub fn create_project_script(parent: &str, name: &str) -> String {
-    let parent = shell_dir(parent.trim_end_matches('/'));
+    // "/" trims to nothing, which would mean the current directory.
+    let parent = match parent.trim().trim_end_matches('/') {
+        "" if parent.trim().starts_with('/') => String::new(),
+        trimmed => shell_dir(trimmed),
+    };
     let name = acc_core::shell::quote(name.trim());
     format!(
         "p={parent}/{name}; [ -e \"$p\" ] && [ -n \"$(ls -A \"$p\")\" ] && exit {EXIT_TAKEN}; \
@@ -458,6 +462,7 @@ mod tests {
              mkdir -p \"$p\" && cd \"$p\" && git init -q && pwd -P\n"
         );
         assert!(create_project_script("~", "x").starts_with("p=\"$HOME\"/x;"));
+        assert!(create_project_script("/", "x").starts_with("p=/x;"));
         assert!(create_project_script("/srv/it's", "x").starts_with("p='/srv/it'\\''s'/x;"));
         assert_eq!(
             save_plan_script("/w/a b", "docs/plans/2026-11-04-x.md"),
