@@ -1,8 +1,10 @@
 //! The one-line status bar.
 
-use acc_core::event::ItemKind;
+use acc_core::event::{Cost, ItemKind};
+use acc_core::state::RunState;
 use acc_core::transcript::ItemStatus;
 
+use crate::keymap::Action;
 use crate::model::{App, FeedStatus};
 use crate::overlay::option_label;
 use crate::slot::Urgency;
@@ -12,9 +14,9 @@ use crate::wrap::{truncate, width};
 
 /// Cells in a meter, when the bar has room.
 const METER_W: u64 = 6;
-/// Width of the longest state word ("attaching", "replaying"), so the
-/// rest of the bar doesn't move when the state changes.
-const STATE_W: usize = 9;
+/// Width of the longest state word ("interrupted"), so the rest of the
+/// bar doesn't move when the state changes.
+const STATE_W: usize = 11;
 
 pub fn build(app: &App, w: usize) -> Line {
     // Full meters where they fit, then short ones, then bare percentages.
@@ -46,6 +48,7 @@ fn bar(app: &App, w: usize, cells: u64) -> Line {
         Urgency::Working if glyph == "⚙" => (glyph, t.tool),
         Urgency::Working => (spinner(app.now_ms), t.thinking),
         Urgency::Done => (glyph, t.done),
+        Urgency::Interrupted => (glyph, t.permission),
         _ => (glyph, t.muted),
     };
     line.push(Span::new(
@@ -87,6 +90,13 @@ fn bar(app: &App, w: usize, cells: u64) -> Line {
                 usage.push(Span::new(" · ", muted));
             }
             usage.push(Span::new(format!("{:<6}", format!("${c:.2}")), Style::new()));
+        }
+        // Copilot's AI Credits and the like: beside dollars, never added in.
+        if let Some(c) = &u.other_cost {
+            if !usage.is_empty() {
+                usage.push(Span::new(" · ", muted));
+            }
+            usage.push(Span::new(other_cost(c), Style::new()));
         }
         if let (Some(i), Some(o)) = (u.input_tokens, u.output_tokens)
             && usage.is_empty()
@@ -160,8 +170,39 @@ fn bar(app: &App, w: usize, cells: u64) -> Line {
         ));
     }
     if let Some(e) = &slot.error {
-        line.push(sep);
+        line.push(sep.clone());
         line.push(Span::new(truncate(e, 40), Style::new().fg(t.error)));
+    }
+    if slot.is_interrupted() {
+        let keys: Vec<String> = app
+            .keymap
+            .keys_for(Action::Revive)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        line.push(sep);
+        line.push(Span::new("host rebooted or harness killed", muted));
+        if !keys.is_empty() {
+            line.push(Span::new(
+                format!(" · {} revive ", keys.join(" ")),
+                Style::new().fg(t.permission),
+            ));
+        }
+    } else if let Some(s) = slot.session.as_ref().and_then(|s| s.state())
+        && matches!(s.state, RunState::Error | RunState::Exited)
+        && let Some(m) = s.message.as_deref().filter(|m| !m.trim().is_empty())
+    {
+        // Why it stopped: "Exited with code 1: <its last stderr line>".
+        let tone = if s.state == RunState::Error {
+            t.error
+        } else {
+            t.muted
+        };
+        line.push(sep);
+        line.push(Span::new(
+            format!("{} ", truncate(&m.replace('\n', " "), 80)),
+            Style::new().fg(tone),
+        ));
     }
     let right = "? help";
     let used = width(&line.text());
@@ -199,6 +240,11 @@ pub(crate) fn gauge(label: &str, pct: u64, cells: u64, app: &App) -> Vec<Span> {
 fn meter(pct: u64, cells: u64) -> String {
     let full = (pct * cells).div_ceil(100).min(cells) as usize;
     format!("{}{}", "▰".repeat(full), "▱".repeat(cells as usize - full))
+}
+
+/// `3.50 AI Credits`: an amount in the harness's own unit.
+pub(crate) fn other_cost(c: &Cost) -> String {
+    format!("{:.2} {}", c.amount, c.currency)
 }
 
 pub(crate) fn short(n: u64) -> String {

@@ -831,7 +831,15 @@ fn question_step(
         lines.extend(wrap_hang(&l, w, &Line::raw("       ")).into_iter().map(padded));
     }
     lines.push(Line::default());
-    lines.push(padded(Line::styled("or type an answer", muted)));
+    let free = q.options.is_empty();
+    lines.push(padded(Line::styled(
+        if free {
+            "type an answer"
+        } else {
+            "or type an answer"
+        },
+        muted,
+    )));
     let box_w = w.saturating_sub(4);
     let shown = tail(text, box_w);
     let edge = Style::new().fg(if text.is_empty() {
@@ -851,7 +859,9 @@ fn question_step(
     ])));
     lines.push(padded(Line::styled(format!("╰{}╯", "─".repeat(box_w + 2)), edge)));
     let next = if i + 1 == steps.len() { "send" } else { "next" };
-    let mut footer = if q.multi_select {
+    let mut footer = if free {
+        format!("enter {next}")
+    } else if q.multi_select {
         format!("space tick · enter {next}")
     } else {
         format!("1-9 pick · enter {next}")

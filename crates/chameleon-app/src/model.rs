@@ -82,6 +82,8 @@ pub struct App {
     pub(crate) selection: Option<crate::select::Selection>,
     /// What each session spent, by session id (see [`crate::usage`]).
     pub(crate) usage: std::collections::BTreeMap<String, acc_core::usage::UsageRecord>,
+    /// Each session's running total in a unit other than dollars.
+    pub(crate) other_costs: std::collections::BTreeMap<String, crate::usage::OtherCost>,
     pub(crate) usage_dirty: bool,
     pub(crate) usage_saved_ms: u64,
     /// The local time zone's offset from UTC, in minutes.
@@ -190,6 +192,7 @@ impl App {
             layout: Layout::default(),
             selection: None,
             usage: Default::default(),
+            other_costs: Default::default(),
             usage_dirty: false,
             usage_saved_ms: 0,
             utc_offset_min: 0,
@@ -816,6 +819,10 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::Revive => match self.selected().map(|s| s.key.clone()) {
+                Some(key) => self.revive(&key),
+                None => Vec::new(),
+            },
             Action::Interrupt => self.send_selected(Command::Interrupt),
             Action::Compact => self.send_selected(Command::Compact { hint: None }),
             Action::Fork => self.send_selected(Command::Fork),

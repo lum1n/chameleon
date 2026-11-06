@@ -79,6 +79,7 @@ pub fn build(app: &App, rect: Rect) -> PaneView {
                 Urgency::Working if glyph == "⚙" => (glyph, theme.tool),
                 Urgency::Working => (spinner(app.now_ms), theme.thinking),
                 Urgency::Done => (glyph, theme.done),
+                Urgency::Interrupted => (glyph, theme.permission),
                 Urgency::Idle => (glyph, Color::Reset),
                 Urgency::Exited | Urgency::Unknown => (glyph, theme.muted),
             };
@@ -117,7 +118,8 @@ pub fn build(app: &App, rect: Rect) -> PaneView {
             };
             let used = 6 + width(&right) + 1;
             let title_w = w.saturating_sub(used);
-            let dead = matches!(urgency, Urgency::Exited) || slot.phase == Phase::Listed && !slot.is_alive();
+            let dead = matches!(urgency, Urgency::Exited | Urgency::Interrupted)
+                || slot.phase == Phase::Listed && !slot.is_alive();
             let mut title_style = Style::new();
             if slot.attention || is_sel {
                 title_style = title_style.bold();

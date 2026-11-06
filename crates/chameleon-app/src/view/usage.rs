@@ -16,12 +16,13 @@
 //! ╰──────────────────────────────────────────────── j/k scroll · esc ───╯
 //! ```
 
+use acc_core::event::Cost;
 use acc_core::usage::{Spend, roll_up};
 
 use crate::model::App;
 use crate::style::{Line, Span, Style};
 use crate::view::overlay::{centered, fit_content};
-use crate::view::status::{gauge, short, short_window};
+use crate::view::status::{gauge, other_cost, short, short_window};
 use crate::view::{OverlayView, Rect};
 use crate::wrap::{fit, truncate, width};
 
@@ -53,6 +54,16 @@ fn cost_col(s: &Spend) -> String {
     format!("{:>9}", cost(s))
 }
 
+/// Totals in units other than dollars (Copilot's AI Credits), before the
+/// dollar column; nothing when there are none.
+fn other(costs: Vec<Cost>) -> Vec<Span> {
+    if costs.is_empty() {
+        return Vec::new();
+    }
+    let text: Vec<String> = costs.iter().map(other_cost).collect();
+    vec![Span::raw(text.join(" · ")), Span::raw("  ")]
+}
+
 /// `left`, then `right` flush right in `w` columns.
 fn spread(mut left: Line, right: Vec<Span>, w: usize) -> Line {
     let rw: usize = right.iter().map(|s| width(&s.text)).sum();
@@ -82,13 +93,12 @@ pub fn build(app: &App, scroll: usize, area: Rect) -> OverlayView {
             muted,
         )));
     } else {
+        let mut right = vec![Span::new(tokens(&r.total), muted), Span::raw("  ")];
+        right.extend(other(app.other_costs(|_| true)));
+        right.push(Span::new(cost_col(&r.total), Style::new().bold()));
         lines.push(pad(spread(
             Line::styled("all sessions", Style::new().bold()),
-            vec![
-                Span::new(tokens(&r.total), muted),
-                Span::raw("  "),
-                Span::new(cost_col(&r.total), Style::new().bold()),
-            ],
+            right,
             w,
         )));
         lines.push(Line::default());
@@ -103,15 +113,14 @@ pub fn build(app: &App, scroll: usize, area: Rect) -> OverlayView {
                 Span::new(fit(a.harness.display_name(), 13), Style::new().bold()),
                 Span::new(truncate(&who.join(" · "), w.saturating_sub(40)), muted),
             ]);
-            lines.push(pad(spread(
-                left,
-                vec![
-                    Span::new(sessions, muted),
-                    Span::raw("  "),
-                    Span::new(cost_col(&a.spend), Style::new()),
-                ],
-                w,
-            )));
+            let mut right = vec![Span::new(sessions, muted), Span::raw("  ")];
+            // Kept per session, not per account: shown where the harness
+            // has only the one account.
+            if r.accounts.iter().filter(|b| b.harness == a.harness).count() == 1 {
+                right.extend(other(app.other_costs(|rec| rec.harness == a.harness)));
+            }
+            right.push(Span::new(cost_col(&a.spend), Style::new()));
+            lines.push(pad(spread(left, right, w)));
             let mut gauges = Line::raw(" ".repeat(13));
             for win in a.quota.iter().flat_map(|q| &q.windows) {
                 if let Some(p) = win.used_percent {

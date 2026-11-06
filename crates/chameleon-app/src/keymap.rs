@@ -186,6 +186,7 @@ pub enum Action {
     Refresh,
     Kill,
     Remove,
+    Revive,
     Interrupt,
     Compact,
     Fork,
@@ -211,7 +212,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 45] = [
+    pub const ALL: [Action; 46] = [
         Action::Quit,
         Action::Help,
         Action::SelectUp,
@@ -235,6 +236,7 @@ impl Action {
         Action::Refresh,
         Action::Kill,
         Action::Remove,
+        Action::Revive,
         Action::Interrupt,
         Action::Compact,
         Action::Fork,
@@ -302,6 +304,7 @@ impl Action {
             Action::Refresh => "refresh sessions",
             Action::Kill => "stop the harness",
             Action::Remove => "remove the session",
+            Action::Revive => "revive an interrupted session (host rebooted, harness killed)",
             Action::Interrupt => "interrupt the turn",
             Action::Compact => "compact the context",
             Action::Fork => "fork the session",
@@ -393,6 +396,7 @@ impl Default for Keymap {
             (Key::char('r'), Action::Refresh),
             (Key::char('x'), Action::Kill),
             (Key::char('D'), Action::Remove),
+            (Key::char('R'), Action::Revive),
             (Key::char('f'), Action::Fork),
             (Key::char('c'), Action::Compact),
             (Key::char('o'), Action::Options),

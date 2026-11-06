@@ -37,6 +37,7 @@ pub fn build(app: &App, w: usize) -> Line {
         (Urgency::Error, "✖", t.error),
         (Urgency::Working, spinner(app.now_ms), t.thinking),
         (Urgency::Done, "✓", t.done),
+        (Urgency::Interrupted, "↯", t.permission),
         (Urgency::Idle, "·", t.muted),
     ];
     for (u, glyph, color) in groups {

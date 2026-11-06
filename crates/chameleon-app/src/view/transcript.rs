@@ -40,6 +40,14 @@ pub fn build(app: &mut App, rect: Rect) -> PaneView {
     let Some(session) = &slot.session else {
         let msg: &[&str] = match slot.phase {
             Phase::Listed if slot.is_alive() => &["press enter to attach"],
+            Phase::Listed if slot.is_interrupted() => &[
+                "this session was interrupted: its host rebooted,",
+                "or the harness was killed",
+                "",
+                "R  revive it, resuming the conversation",
+                "enter  read its transcript",
+                "D  remove it",
+            ],
             Phase::Listed => &[
                 "this session has exited",
                 "",
@@ -89,6 +97,7 @@ pub fn build(app: &mut App, rect: Rect) -> PaneView {
             // Steps of one turn (thinking, tools) stack without gaps.
             gap: !(is_step(item) && next_visible(items, scope, idx).is_some_and(is_step)),
             children: children.get(item.id.as_str()).copied().unwrap_or(0),
+            took_ms: slot.took_ms.get(&item.id).copied(),
         };
         let rev = rev
             .wrapping_mul(1 << 20)
@@ -479,6 +488,9 @@ pub struct Look {
     pub gap: bool,
     /// Items in the conversation of a subagent run, to open.
     pub children: usize,
+    /// How long the step took, when the harness timed both ends. Known
+    /// once it completes, which bumps its revision.
+    pub took_ms: Option<u64>,
 }
 
 /// Thinking and tool calls: the steps between messages.
@@ -747,6 +759,7 @@ fn step(item: &Item, look: Look, ctx: &ItemCtx, cw: usize) -> Vec<Line> {
                 _ if item.status != ItemStatus::Running => meta.extend(count(&output, muted)),
                 _ => {}
             }
+            took(&mut meta, look, muted);
             let cmd = short_command(command.trim(), ctx.cwd);
             let head = Line::new(vec![glyph(bad), Span::new("$ ", muted), Span::new(cmd, muted)]);
             out.extend(head_line(head, meta, look, has_more(&output), cw, muted));
@@ -757,11 +770,12 @@ fn step(item: &Item, look: Look, ctx: &ItemCtx, cw: usize) -> Vec<Line> {
         } => {
             let bad = failed(None);
             let output = output.unwrap_or_else(|| item.text.clone());
-            let meta = if item.status == ItemStatus::Running {
+            let mut meta = if item.status == ItemStatus::Running {
                 Vec::new()
             } else {
                 count(&output, muted)
             };
+            took(&mut meta, look, muted);
             let title = short_path(&title.replace('\n', " "), ctx.cwd);
             let head = Line::new(vec![glyph(bad), name(&tool), Span::new(title, muted)]);
             out.extend(head_line(head, meta, look, has_more(&output), cw, muted));
@@ -837,6 +851,26 @@ fn step(item: &Item, look: Look, ctx: &ItemCtx, cw: usize) -> Vec<Line> {
         }
     }
     out
+}
+
+/// Adds how long a step took to its `meta`, when the harness timed it.
+fn took(meta: &mut Vec<Span>, look: Look, muted: Style) {
+    let Some(ms) = look.took_ms else {
+        return;
+    };
+    if !meta.is_empty() {
+        meta.push(Span::new(" · ", muted));
+    }
+    meta.push(Span::new(duration(ms), muted));
+}
+
+/// `340ms`, `2.3s`, `4m05s`.
+fn duration(ms: u64) -> String {
+    match ms {
+        0..1_000 => format!("{ms}ms"),
+        1_000..60_000 => format!("{:.1}s", ms as f64 / 1e3),
+        _ => format!("{}m{:02}s", ms / 60_000, ms / 1_000 % 60),
+    }
 }
 
 /// The head of a step: clipped to one line with `meta` at the right edge,
@@ -1041,6 +1075,13 @@ pub fn hunks(f: &FileDiff, theme: &Theme) -> Vec<Line> {
 mod tests {
     use super::*;
     use acc_core::item::ItemDetail;
+
+    #[test]
+    fn durations_read_short() {
+        assert_eq!(duration(340), "340ms");
+        assert_eq!(duration(2_340), "2.3s");
+        assert_eq!(duration(245_000), "4m05s");
+    }
 
     fn item(kind: ItemKind, status: ItemStatus, text: &str) -> Item {
         Item {

@@ -564,6 +564,12 @@ impl Overlay {
     }
 }
 
+/// Whether question `i` of a request must be answered (an elicitation
+/// form's required field).
+pub(crate) fn required(p: &Permission, i: usize) -> bool {
+    p.native.pointer(&format!("/questions/{i}/required")) == Some(&serde_json::Value::Bool(true))
+}
+
 /// The questions a request is answered through one at a time: several
 /// questions, or one taking several picks. Empty when its options suffice.
 pub fn steps(p: &Permission) -> Vec<acc_core::question::Question> {
@@ -784,15 +790,18 @@ impl App {
                 if let Some(q) = steps.get(answers.len()) {
                     let labels: Vec<String> = q.options.iter().map(|o| o.label.clone()).collect();
                     let n = labels.len().max(1);
+                    // A question without options (a form's text or number
+                    // field) takes only typing: no key picks or moves.
+                    let picks = !labels.is_empty() && text.is_empty();
                     let mut done = None;
                     match key.code {
                         KeyCode::Esc => keep = false,
                         KeyCode::Down | KeyCode::Tab => *selected = (*selected + 1) % n,
                         KeyCode::Up | KeyCode::BackTab => *selected = (*selected + n - 1) % n,
-                        KeyCode::Char('j') if text.is_empty() => *selected = (*selected + 1) % n,
-                        KeyCode::Char('k') if text.is_empty() => *selected = (*selected + n - 1) % n,
-                        KeyCode::Char(' ') if text.is_empty() && q.multi_select => toggle(marked, *selected),
-                        KeyCode::Char(c) if c.is_ascii_digit() && text.is_empty() && !key.ctrl => {
+                        KeyCode::Char('j') if picks => *selected = (*selected + 1) % n,
+                        KeyCode::Char('k') if picks => *selected = (*selected + n - 1) % n,
+                        KeyCode::Char(' ') if picks && q.multi_select => toggle(marked, *selected),
+                        KeyCode::Char(c) if c.is_ascii_digit() && picks && !key.ctrl => {
                             let i = c.to_digit(10).unwrap_or(0) as usize;
                             if i >= 1 && i <= labels.len() {
                                 *selected = i - 1;
@@ -809,6 +818,9 @@ impl App {
                             } else if q.multi_select && !marked.is_empty() {
                                 marked.sort_unstable();
                                 Some(marked.iter().filter_map(|&i| labels.get(i).cloned()).collect())
+                            } else if labels.is_empty() {
+                                // Left blank: fine unless the form needs it.
+                                (!required(&perm, answers.len())).then(Vec::new)
                             } else {
                                 labels.get(*selected).map(|l| vec![l.clone()])
                             };

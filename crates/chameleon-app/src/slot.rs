@@ -91,6 +91,9 @@ pub enum Urgency {
     Working,
     Idle,
     Done,
+    /// The harness died without recording an exit (the host rebooted, or
+    /// it was killed); [`crate::keymap::Action::Revive`] brings it back.
+    Interrupted,
     Exited,
     Unknown,
 }
@@ -129,6 +132,10 @@ pub struct Slot {
     pub error: Option<String>,
     /// The log size reported by the status script, for exited sessions.
     pub log_size: Option<u64>,
+    /// How long items took, by id, where the harness timed both ends.
+    pub took_ms: HashMap<ItemId, u64>,
+    /// When timed items began, by id, until they finish.
+    pub started_ms: HashMap<ItemId, u64>,
     /// The latest dialog the harness answered with, by palette entry.
     pub panels: HashMap<String, Panel>,
     /// The agent's latest to-do list for the main conversation.
@@ -183,6 +190,8 @@ impl Slot {
             kill_after_launch: None,
             error: None,
             log_size: None,
+            took_ms: HashMap::new(),
+            started_ms: HashMap::new(),
             panels: HashMap::new(),
             plan: None,
             turn_diff: None,
@@ -239,6 +248,14 @@ impl Slot {
         }
     }
 
+    /// The harness and its wrapper died without recording an exit: the
+    /// host rebooted, or they were killed. Only a revive brings it back.
+    pub fn is_interrupted(&self) -> bool {
+        self.phase != Phase::Launching
+            && matches!(self.status, Some(Status::Interrupted { .. }))
+            && !self.is_alive()
+    }
+
     pub fn run_state(&self) -> Option<&RunState> {
         self.session.as_ref().and_then(|s| s.state()).map(|s| &s.state)
     }
@@ -246,6 +263,9 @@ impl Slot {
     pub fn urgency(&self) -> Urgency {
         if self.session.as_ref().is_some_and(|s| !s.permissions().is_empty()) {
             return Urgency::Blocked;
+        }
+        if self.is_interrupted() {
+            return Urgency::Interrupted;
         }
         match self.run_state() {
             Some(RunState::Blocked { .. }) => Urgency::Blocked,
@@ -257,6 +277,7 @@ impl Slot {
             Some(RunState::Exited) => Urgency::Exited,
             None => match self.status {
                 Some(Status::Alive { .. }) => Urgency::Unknown,
+                Some(Status::Interrupted { .. }) => Urgency::Interrupted,
                 Some(Status::Exited { .. }) | Some(Status::Missing) => Urgency::Exited,
                 None => Urgency::Unknown,
             },
@@ -272,6 +293,9 @@ impl Slot {
                 BlockKind::Question => ("?", "question"),
                 _ => ("⚠", "approval"),
             };
+        }
+        if self.is_interrupted() {
+            return ("↯", "interrupted");
         }
         match self.run_state() {
             Some(RunState::Blocked { kind }) => match kind {
@@ -310,6 +334,7 @@ impl Slot {
                 Phase::Listed => match self.status {
                     Some(Status::Alive { .. }) => ("·", "alive"),
                     Some(Status::Exited { .. }) => ("·", "exited"),
+                    Some(Status::Interrupted { .. }) => ("↯", "interrupted"),
                     Some(Status::Missing) => ("·", "missing"),
                     None => ("·", ""),
                 },

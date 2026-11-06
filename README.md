@@ -74,6 +74,7 @@ Rust 1.88 or newer. The optional Lua runtime needs `--features lua`.
 | `L` | skills and MCP servers on the selected session's host (or the first host), one column per harness. Skills live once in `~/.agents/skills` and are symlinked into each harness's own directory: `space` links or unlinks the skill for the harness under the cursor (`h`/`l`), `a`/`u` for every harness, `A` adopts a skill that lives only in one harness's directory, `X X` deletes it. On the `mcp` tab (`tab`), `space` copies a server to the harness or removes it there, `e` switches it off and on where the harness can keep it off, `n` adds one (`name command args…` or `name https://url`), `X X` deletes it everywhere. Config files are edited one entry at a time and backed up to `~/.acc/backups/` before each write. `p` switches to the selected session's project |
 | `ctrl-c` `c` `f` | interrupt, compact, fork |
 | `x` / `D` | stop the harness / stop and delete the session |
+| `R` | revive an interrupted session (`↯`: its host rebooted, or the harness was killed, without recording an exit): the harness starts again under the same id and resumes its own conversation, with the stored model, permission, worktree and sandbox. Never done on its own. A session whose harness never reported its id can't be revived. The transcript then shows the new run |
 | `r` | re-list sessions on every host |
 | `?` | help, with your bindings and config problems |
 

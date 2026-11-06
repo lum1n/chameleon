@@ -68,6 +68,64 @@ impl App {
         vec![self.run(host, exec, ExecTag::Launch(id))]
     }
 
+    /// Starts an interrupted session's harness again under the same id,
+    /// resuming its own conversation. Only when you ask: nothing is
+    /// revived on its own.
+    pub(crate) fn revive(&mut self, key: &SessionKey) -> Vec<Effect> {
+        let policy = self.policy();
+        let Some(i) = self.slot_index(key) else {
+            return Vec::new();
+        };
+        if !self.slots[i].is_interrupted() {
+            let why = if self.slots[i].is_alive() {
+                "the session is running"
+            } else {
+                "only an interrupted session can be revived"
+            };
+            self.toast(why, false);
+            return Vec::new();
+        }
+        let (mut session, exec) = match Session::revive(&self.slots[i].spec, &self.client_tag) {
+            Ok(x) => x,
+            Err(e) => {
+                let msg = match e {
+                    SessionError::NotResumable(_) => {
+                        "can't revive: the harness never reported a session id to resume".to_owned()
+                    }
+                    e => format!("can't revive: {e}"),
+                };
+                self.slots[i].error = Some(msg.clone());
+                self.toast(msg, true);
+                return Vec::new();
+            }
+        };
+        session.set_policy(policy);
+        // The new run is followed from where it starts, as a fresh session
+        // in the same row: the earlier run's items, times and plan go.
+        let mut slot = Slot::new(key.clone(), session.spec().clone());
+        let old = &self.slots[i];
+        slot.status = old.status;
+        slot.modified = old.modified;
+        slot.auto_approve = old.auto_approve;
+        slot.session = Some(session);
+        slot.phase = Phase::Launching;
+        slot.last_live_ms = self.now_ms;
+        self.toast(format!("Reviving {}…", slot.harness().display_name()), false);
+        self.slots[i] = slot;
+        // The earlier run's followers stop; the launch starts new ones.
+        vec![
+            Effect::Unfollow {
+                host: key.host.clone(),
+                key: key.log_key(),
+            },
+            Effect::Unfollow {
+                host: key.host.clone(),
+                key: key.exit_key(),
+            },
+            self.run(&key.host, exec, ExecTag::Launch(key.id.clone())),
+        ]
+    }
+
     /// Starts the host's watcher for the session in slot `i`, when the
     /// config asks for one. Only for sessions started here: running it
     /// again replaces the hook another client may have set.
@@ -412,7 +470,8 @@ impl App {
         };
         match outcome {
             Ok(o) => {
-                // The PID, then for a sandboxed session what the host applied.
+                // The PID, where this run's output starts in the log, then
+                // for a sandboxed session what the host applied.
                 let stdout = o.stdout_text();
                 let pid = stdout.lines().next().unwrap_or("").trim().to_owned();
                 self.slots[i].phase = Phase::Live;
@@ -424,7 +483,9 @@ impl App {
                     Some(s) => s.on_launched(&stdout),
                     None => Vec::new(),
                 };
-                let mut out = Self::follow_effects(&key, 0);
+                // Past an earlier run's output when the session was revived.
+                let from = self.slots[i].session.as_ref().map_or(0, Session::offset);
+                let mut out = Self::follow_effects(&key, from);
                 out.extend(self.process_updates(i, updates));
                 out.extend(self.flush(i));
                 out.extend(self.watch(i));
@@ -636,6 +697,22 @@ impl App {
                 // Replayed too: the log is the only place the plan is kept.
                 match &u.event {
                     Event::Plan(plan) => slot.plan = Some(plan.clone()),
+                    Event::ItemStarted {
+                        id,
+                        started_at_ms: Some(at),
+                        ..
+                    } => {
+                        slot.started_ms.insert(id.clone(), *at);
+                    }
+                    Event::ItemCompleted {
+                        id,
+                        completed_at_ms: Some(at),
+                        ..
+                    } => {
+                        if let Some(start) = slot.started_ms.remove(id) {
+                            slot.took_ms.insert(id.clone(), at.saturating_sub(start));
+                        }
+                    }
                     Event::TurnDiff { diff, .. } => {
                         slot.turn_diff = Some(acc_core::item::parse_unified(diff, ""));
                     }

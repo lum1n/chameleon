@@ -2547,3 +2547,169 @@ fn build_with_starts_another_agent_on_the_saved_plan_and_stops_the_planner() {
         "{snap}"
     );
 }
+
+/// Launches a Claude session and has the host report it interrupted (the
+/// host rebooted under it), after `log` was read.
+fn interrupted_claude(a: &mut App, log: &str) -> SessionKey {
+    let (key, _) = launch(a, Harness::Claude, "hi");
+    a.handle(
+        AppEvent::ExecDone {
+            host: key.host.clone(),
+            tag: ExecTag::Launch(key.id.clone()),
+            result: ok("4242\nL 0\n"),
+        },
+        4,
+    );
+    feed(a, &key, log, 5);
+    let size = a.selected().unwrap().session.as_ref().unwrap().offset();
+    a.handle(
+        AppEvent::ExecDone {
+            host: key.host.clone(),
+            tag: ExecTag::Recheck(key.id.clone()),
+            result: ok(&format!("interrupted {size}\n")),
+        },
+        6,
+    );
+    a.handle(AppEvent::Key(Key::alt(KeyCode::Char('1'))), 6);
+    key
+}
+
+#[test]
+fn an_interrupted_session_is_revived_only_when_asked() {
+    let mut a = app();
+    let key = interrupted_claude(&mut a, CLAUDE_HI);
+    let slot = a.selected().unwrap();
+    assert_eq!(slot.badge(), ("↯", "interrupted"));
+    assert_eq!(slot.urgency(), chameleon_app::slot::Urgency::Interrupted);
+    let status = a.screen().status.text();
+    assert!(
+        status.contains("interrupted") && status.contains("R revive"),
+        "{status}"
+    );
+
+    let fx = a.handle(ch('R'), 7);
+    let unfollows = fx.iter().filter(|e| matches!(e, Effect::Unfollow { .. })).count();
+    assert_eq!(unfollows, 2, "the earlier run's followers stop");
+    let script = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::Run {
+                tag: ExecTag::Launch(id),
+                exec,
+                ..
+            } if *id == key.id => Some(exec.script.clone()),
+            _ => None,
+        })
+        .expect("relaunched under the same id");
+    assert!(script.contains("--resume"), "{script}");
+
+    // The new run's output starts after the earlier run's.
+    let fx = a.handle(
+        AppEvent::ExecDone {
+            host: key.host.clone(),
+            tag: ExecTag::Launch(key.id.clone()),
+            result: ok("4343\nL 900\n"),
+        },
+        8,
+    );
+    let from = fx.iter().find_map(|e| match e {
+        Effect::Follow { entry, .. } if entry.key == key.log_key() => Some(entry.offset),
+        _ => None,
+    });
+    assert_eq!(from, Some(900));
+    let slot = a.selected().unwrap();
+    assert!(slot.is_alive() && !slot.is_interrupted());
+    assert!(a.handle(ch('R'), 9).is_empty(), "a running session isn't revived");
+}
+
+#[test]
+fn a_session_without_a_harness_id_says_it_cant_be_revived() {
+    let mut a = app();
+    interrupted_claude(&mut a, "");
+    assert!(a.handle(ch('R'), 7).is_empty());
+    let toasts: Vec<String> = a.screen().toasts.iter().map(|l| l.text()).collect();
+    assert!(
+        toasts.iter().any(|t| t.contains("never reported a session id")),
+        "{toasts:?}"
+    );
+}
+
+#[test]
+fn an_exited_session_shows_why_in_the_status_bar() {
+    let mut a = app();
+    let (key, _) = launch(&mut a, Harness::Claude, "hi");
+    a.handle(
+        AppEvent::ExecDone {
+            host: key.host.clone(),
+            tag: ExecTag::Launch(key.id.clone()),
+            result: ok("4242\nL 0\n"),
+        },
+        4,
+    );
+    a.handle(
+        AppEvent::ExecDone {
+            host: key.host.clone(),
+            tag: ExecTag::Recheck(key.id.clone()),
+            result: ok("exited 1 0\nE claude: not logged in\n"),
+        },
+        5,
+    );
+    let status = a.screen().status.text();
+    assert!(
+        status.contains("Exited with code 1: claude: not logged in"),
+        "{status}"
+    );
+}
+
+#[test]
+fn a_form_of_free_text_fields_is_answered_field_by_field() {
+    let mut a = app();
+    let (key, _) = launch(&mut a, Harness::Claude, "");
+    a.handle(
+        AppEvent::ExecDone {
+            host: key.host.clone(),
+            tag: ExecTag::Launch(key.id.clone()),
+            result: ok("1\n"),
+        },
+        4,
+    );
+    let form = serde_json::json!({"type":"control_request","request_id":"e1","request":{
+        "subtype":"elicitation","mcp_server_name":"deploy","message":"Deploy details","mode":"form",
+        "requested_schema":{"type":"object","required":["name"],"properties":{
+            "name":{"type":"string","title":"Name"},
+            "replicas":{"type":"integer","description":"How many replicas?"},
+            "note":{"type":"string","title":"Note"}}},
+        "property_order":["name","replicas","note"]}});
+    feed(&mut a, &key, &format!("{form}\n"), 5);
+    a.handle(press(KeyCode::Esc), 6);
+    a.handle(press(KeyCode::Enter), 6);
+    let ov = a.screen().overlay.expect("question overlay");
+    assert!(ov.lines.iter().any(|l| l.text().contains("Name · 1 of 3")));
+    // A required field can't be left blank.
+    a.handle(press(KeyCode::Enter), 7);
+    let ov = a.screen().overlay.expect("still on the first field");
+    assert!(ov.lines.iter().any(|l| l.text().contains("Name · 1 of 3")));
+    // Keys that pick options elsewhere are typing here.
+    for c in "jo k".chars() {
+        a.handle(ch(c), 7);
+    }
+    a.handle(press(KeyCode::Enter), 7);
+    a.handle(ch('3'), 7);
+    a.handle(press(KeyCode::Enter), 7);
+    // The note is optional: left blank.
+    let fx = a.handle(press(KeyCode::Enter), 8);
+    assert!(a.overlay().is_none());
+    let input = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::Input { exec, .. } => Some(String::from_utf8_lossy(&exec.stdin).into_owned()),
+            _ => None,
+        })
+        .expect("the answers are sent");
+    let sent: serde_json::Value = serde_json::from_str(input.lines().next().unwrap()).unwrap();
+    assert_eq!(
+        sent["response"]["response"],
+        serde_json::json!({"action": "accept", "content": {"name": "jo k", "replicas": 3}}),
+        "{input}"
+    );
+}
