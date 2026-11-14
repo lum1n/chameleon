@@ -237,6 +237,85 @@ mod tests {
         assert!(c.other_costs.is_empty());
     }
 
+    fn credits(amount: f64, currency: &str, at_ms: u64) -> OtherCost {
+        OtherCost {
+            cost: Cost {
+                amount,
+                currency: currency.into(),
+            },
+            at_ms,
+        }
+    }
+
+    #[test]
+    fn other_costs_are_added_per_unit_and_only_for_the_sessions_picked() {
+        let mut a = App::new(crate::config::Config::default(), "test");
+        for (id, harness, unit, amount) in [
+            ("s1", Harness::Claude, "AI Credits", 1.0),
+            ("s2", Harness::Claude, "AI Credits", 2.0),
+            ("s3", Harness::Claude, "points", 4.0),
+        ] {
+            let mut r = rec(&[(0, 1)]);
+            r.session_id = id.into();
+            r.harness = harness;
+            a.usage.insert(id.into(), r);
+            a.other_costs.insert(id.into(), credits(amount, unit, 0));
+        }
+        // Units are never mixed.
+        let mut all = a.other_costs(|_| true);
+        all.sort_by(|x, y| x.currency.cmp(&y.currency));
+        assert_eq!(all.len(), 2);
+        assert_eq!((all[0].currency.as_str(), all[0].amount), ("AI Credits", 3.0));
+        assert_eq!((all[1].currency.as_str(), all[1].amount), ("points", 4.0));
+        // Only the sessions the filter keeps count.
+        assert!(a.other_costs(|r| r.harness == Harness::Codex).is_empty());
+        // A cost with no usage record is ignored.
+        a.other_costs
+            .insert("ghost".into(), credits(9.0, "AI Credits", 0));
+        assert_eq!(a.other_costs(|_| true).iter().map(|c| c.amount).sum::<f64>(), 7.0);
+    }
+
+    #[test]
+    fn saving_drops_old_records_with_their_other_costs_but_keeps_recent_credits() {
+        let now = 2 * KEEP_MS;
+        let mut a = App::new(crate::config::Config::default(), "test");
+        a.now_ms = now;
+        // Old spend and old credits: dropped, along with its other cost.
+        let mut old = rec(&[(0, 10)]);
+        old.session_id = "old".into();
+        a.usage.insert("old".into(), old);
+        a.other_costs.insert("old".into(), credits(1.0, "AI Credits", 0));
+        // Old spend, but credits read recently: kept.
+        let mut recent = rec(&[(0, 10)]);
+        recent.session_id = "recent".into();
+        a.usage.insert("recent".into(), recent);
+        a.other_costs
+            .insert("recent".into(), credits(2.0, "AI Credits", now));
+        a.usage_dirty = true;
+        let Some(Effect::SaveUsage { json }) = a.save_usage(true) else {
+            panic!("saves");
+        };
+        assert!(!a.usage.contains_key("old") && !a.other_costs.contains_key("old"));
+        assert!(a.usage.contains_key("recent") && a.other_costs.contains_key("recent"));
+        let mut b = App::new(crate::config::Config::default(), "test");
+        b.load_usage(&json);
+        assert_eq!(b.other_costs.keys().collect::<Vec<_>>(), vec!["recent"]);
+        // Nothing changed since: nothing saved.
+        assert!(a.save_usage(true).is_none());
+    }
+
+    #[test]
+    fn loading_keeps_what_is_already_known() {
+        let mut a = App::new(crate::config::Config::default(), "test");
+        a.other_costs.insert("s1".into(), credits(5.0, "AI Credits", 1));
+        let json = r#"[{"session_id":"s1","harness":"claude","buckets":[],"quota":null,"quota_at_ms":null,"other_cost":{"cost":{"amount":1.0,"currency":"AI Credits"},"at_ms":0}}]"#;
+        a.load_usage(json);
+        assert_eq!(a.other_costs["s1"].cost.amount, 5.0);
+        // Garbage is ignored.
+        a.load_usage("not json");
+        assert_eq!(a.usage.len(), 1);
+    }
+
     #[test]
     fn a_replayed_record_only_adds_its_growth_at_the_time_read() {
         let day = 24 * 60 * 60 * 1000;
