@@ -83,6 +83,11 @@ has work left on it, the list is pinned under the transcript. Sessions take the 
 gives them, and a fresh Claude session is named from its first prompt, as Claude's
 own TUI does.
 
+Command and tool steps show how long they took (`2.3s`) when the harness timed them. The status
+bar's cost is in dollars; a harness that bills in another unit (Copilot's AI Credits) shows it
+beside them, never added in. A session that exited says why there, with the harness's last
+stderr line.
+
 Every key is remappable. Sessions are listed oldest first and keep their place, so a
 session's jump key (`1`–`0`) stays the same until a session above it is deleted.
 
